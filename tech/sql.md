@@ -33,6 +33,13 @@ SQL is where one of the lesson's top threats lives: **SQL injection**, which hap
 3. If the statement and the values are sent separately (**parameter binding**), the server parses the statement *without* the values. A value can then only ever be data. It is never re-read as SQL.
 4. If you paste the values into the text first, the server parses the combination, and a value like `x'); DROP TABLE users; --` becomes part of the program.
 
+### Ideas you need first
+
+- **SQL.** The language for asking a relational database for data and telling it to change data. A statement ends in `;`.
+- **A statement and a query.** A statement is any command; a query is a statement that reads (`SELECT`).
+- **A placeholder (parameter).** A marker such as `%s` in a statement where a value will be supplied separately. The database receives the statement and the values as two things, so a value can never change the statement's meaning.
+- **A comment.** `--` starts a comment that runs to the end of the line.
+
 ## Walkthrough of this repository's use
 
 ### DDL: shape and rules

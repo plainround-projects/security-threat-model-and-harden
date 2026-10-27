@@ -25,6 +25,14 @@ Two security properties come from the driver. First, **parameter binding**: valu
 4. Nothing is final until the transaction is **committed**. By default the first statement opens a transaction. Leaving a `with connection:` block normally commits; leaving it through an exception rolls back.
 5. A **pool** holds a minimum number of open connections and grows to a maximum. `pool.connection()` lends one, waits (up to a timeout) if all are busy, and takes it back at the end of the `with` block.
 
+### Ideas you need first
+
+- **A database driver.** A library that speaks the database's network protocol so your program does not have to: it opens a connection, sends statements, reads rows.
+- **A cursor and a row.** Running a statement gives you a cursor, a handle for reading results; each result is a row, returned as a tuple of values in column order.
+- **A transaction.** Statements grouped so they all take effect or none do. The `with` block in `Database.connection()` commits at the end, or rolls back if an exception left it.
+- **A connection pool.** Opening a database connection is slow. A pool keeps some open and lends them out, taking each back when the `with` block ends.
+- **A context manager.** `with thing as name:` runs set-up, then your block, then clean-up even after an error.
+
 ## Walkthrough of this repository's use
 
 ### Connection string

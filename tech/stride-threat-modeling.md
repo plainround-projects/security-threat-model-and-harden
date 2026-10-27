@@ -39,6 +39,13 @@ The lesson is "threat-model it, then harden it control by control". `docs/THREAT
 4. For each fixed threat, write the **test that proves the control**, and run it with the control removed to see it fail.
 5. **Accept** what you will not fix, with a written reason (here, volumetric floods are left to infrastructure).
 
+### Ideas you need first
+
+- **A threat.** Something that could go wrong on purpose: a person abusing the system.
+- **A trust boundary.** A line where data passes between parts that you trust differently (browser to server, server to database). Most attacks cross one.
+- **A control.** A measure that prevents, detects or limits a threat.
+- **A proof.** A test that fails when the control is missing: the evidence that the control does its job.
+
 ## Walkthrough of this repository's use
 
 ### The grid

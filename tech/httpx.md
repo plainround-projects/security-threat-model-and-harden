@@ -31,6 +31,12 @@ The repository's real clients are the ones below, so compare:
 | `http.client` | `src/notes_app/interfaces/demo_cli.py` | The scenario sets a `Secure` cookie by hand over plain `http://127.0.0.1`; a small standard-library client keeps full control and needs no dependency in the runtime image. |
 | `urllib.request` | `interfaces/health_cli.py`, `tests/e2e/test_scenario.py` | One GET to `/readyz`; the health check must work in a runtime image that has only the locked runtime dependencies. |
 
+### Ideas you need first
+
+- **A dependency and a development dependency.** A dependency is a library your program needs. A development dependency is one only the people building the project need (test tools, linters). It is not shipped.
+- **An import.** A line that makes a library's code available to a file. A library nobody imports does nothing.
+- **A lock file.** The exact list of every installed package; an unused dependency still appears in it and must be audited.
+
 ## Walkthrough of this repository's use
 
 There is none to walk through. The relevant code is the health check, which is what an httpx call would replace:
