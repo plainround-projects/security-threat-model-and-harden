@@ -30,6 +30,17 @@ The app has state that must be shared by every worker process and survive restar
 6. A **trigger** is a function the server runs automatically before or after a write. If it raises an error, the write is cancelled.
 7. An **index** is a sorted lookup structure that makes queries on those columns fast.
 
+### Ideas you need first
+
+- **A database server.** A program that stores data on disk in an organized way and answers questions about it. Other programs connect to it over the network (its default port is 5432), prove who they are, and send commands.
+- **A table, a row and a column.** A table is like a spreadsheet sheet: each **column** has a name and a type (text, whole number, timestamp), and each **row** is one record. The `users` table has the columns `id`, `username`, `password_hash`, `created_at`; each registered person is one row.
+- **A primary key and an index.** A **primary key** is the column (or columns) whose value identifies a row uniquely. An **index** is an extra sorted lookup structure the database keeps so it can find rows by certain columns quickly instead of reading the whole table.
+- **A constraint.** A rule the database enforces on every write and refuses to break: `NOT NULL` (a value is required), `UNIQUE` (no two rows may share it), `CHECK (...)` (a condition must hold), `REFERENCES other (column)` (a **foreign key**: the value must exist in the other table).
+- **A role and a privilege.** A role is a database account. A **privilege** is a permission on an object (such as `SELECT` to read, `INSERT` to add, `UPDATE`, `DELETE`). A role that has not been granted a privilege cannot use it.
+- **A transaction.** A group of statements that either all take effect or none do. If anything fails halfway, the database undoes the earlier statements of the group (a **rollback**); if everything succeeds, the changes are made permanent (a **commit**).
+- **A trigger.** A function the database runs automatically before or after a change to a table.
+- **A connection.** One open channel between a client and the database server. Opening one is slow, so programs keep a few open and reuse them (a **pool**, `tech/psycopg.md`).
+
 ## Walkthrough of this repository's use
 
 ### Two roles: owner and application
@@ -114,6 +125,28 @@ The function always raises an error. `TG_OP` is the operation that fired it (`UP
 ### Settings the app needs
 
 Environment variables: `NOTES_DB_HOST`, `NOTES_DB_PORT` (5471 on the host, 5432 inside the Compose network), `NOTES_DB_NAME`, `NOTES_DB_USER` (default `notes_app`), `NOTES_DB_PASSWORD` (required), pool sizes. The password is never logged: `DatabaseSettings.password` is declared `field(repr=False)`.
+
+### Every table, index, grant and migration
+
+This lists everything the three schema files and the two migrations create.
+
+**`users`** (`sql/001_schema.sql`). `id` is `bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY` (a large whole number the database fills with 1, 2, 3...; "always" refuses a value supplied by hand). `username` is `text NOT NULL UNIQUE CHECK (username ~ '^[a-z0-9_]{3,32}$')` (`~` means "matches this regular expression"; `^` and `$` mean "the whole value"). `password_hash` is `text NOT NULL CHECK (password_hash <> '')`: `<>` means "not equal". It holds an Argon2 hash, or `!` for a seeded account that cannot sign in. `created_at` is `timestamptz NOT NULL DEFAULT now()`: a timestamp with its time zone, filled with the current time if not supplied. `COMMENT ON TABLE ...` stores a description inside the database.
+
+**`notes`**. `id` as above. `owner_id bigint NOT NULL REFERENCES users (id) ON DELETE CASCADE`: every note belongs to an existing user, and deleting a user deletes their notes (`CASCADE`). `title` has `CHECK (char_length(title) BETWEEN 1 AND 120)`; `content` has `CHECK (char_length(content) <= 10000)`; `created_at`, `updated_at` default to `now()`. Index `notes_owner_idx ON notes (owner_id, updated_at DESC)` speeds up "this owner's notes, newest first".
+
+**`note_shares`**. Columns `note_id` and `user_id`, both foreign keys with `ON DELETE CASCADE`, and `PRIMARY KEY (note_id, user_id)`: a pair of columns is the key, so the same note cannot be shared twice with the same user. Index `note_shares_user_idx ON note_shares (user_id)` finds "notes shared with this user".
+
+**`sessions`**. `token_hash text PRIMARY KEY` (the SHA-256 of the cookie value, so a stolen copy of the table contains nothing usable); `user_id bigint REFERENCES users (id) ON DELETE CASCADE` (may be null: an anonymous session); `csrf_token`; `created_at`, `last_seen_at`, `expires_at` (all `timestamptz NOT NULL`, set by the application). Index `sessions_expires_idx ON sessions (expires_at)` helps purging old sessions.
+
+**Grants.** `GRANT USAGE ON SCHEMA public TO notes_app` lets the role see the tables' namespace (a **schema** is a named group of tables; `public` is the default one). `GRANT SELECT, INSERT, UPDATE, DELETE ON users, notes, note_shares, sessions TO notes_app` is every privilege the application needs on those four tables, and nothing else.
+
+**`audit_events`** (`sql/migrations/001_audit_events.sql`). `id` as above; `occurred_at timestamptz DEFAULT now()`; `action` and `outcome` text; `user_id bigint` (deliberately **no** foreign key, so deleting a user never edits history); `ip text`; `detail jsonb NOT NULL DEFAULT '{}'::jsonb` (`jsonb` stores structured JSON efficiently; `'{}'::jsonb` is an empty object cast to that type). Two indexes on `(action, occurred_at DESC)` and `(user_id, occurred_at DESC)`. The function `audit_events_are_append_only()` is written in PL/pgSQL and always runs `RAISE EXCEPTION 'audit_events is append-only (% refused)', TG_OP USING ERRCODE = 'insufficient_privilege'` (`TG_OP` is "UPDATE" or "DELETE", whichever fired it). The trigger `audit_events_no_update_delete` is `BEFORE UPDATE OR DELETE ... FOR EACH ROW EXECUTE FUNCTION ...`, so every attempt to change or remove a row is refused for every role, the owner included. `GRANT SELECT, INSERT ON audit_events TO notes_app` (no update, no delete). The service layer writes it (`PostgresAuditLog`).
+
+**`login_failures`** (`sql/migrations/002_login_failures.sql`). `key_hash` (a SHA-256 of `ip|username`), `attempted_at`; indexes on `(key_hash, attempted_at)` and `attempted_at`; granted `SELECT, INSERT, DELETE` (it needs to prune rows that aged out).
+
+**`reset.sql`**: `TRUNCATE users, notes, note_shares, sessions, audit_events, login_failures RESTART IDENTITY CASCADE;` empties every table and restarts the id counters. `TRUNCATE` is not a row-level `DELETE`, so the audit trigger does not fire; it is run only by the owner, by tests and `make reset-db`. **`002_seed.sql`** inserts three users with the locked hash `!`, four notes and one share, so `make queries` has something to show.
+
+**How `make up` and `make db` use them.** `make up` starts the container and asks `SELECT to_regclass('public.users') IS NOT NULL` (`to_regclass` returns the table's id or null). If the schema is already there it prints "schema already present"; otherwise `make db` runs `001_schema.sql` (with the app password as a `psql` variable), `002_seed.sql`, then each migration file in name order.
 
 ## Try it yourself
 

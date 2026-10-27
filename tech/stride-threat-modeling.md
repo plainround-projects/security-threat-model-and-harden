@@ -60,6 +60,38 @@ Seven columns: id, boundary, STRIDE letter, threat, control, proving test (file 
 
 `make prove` runs `scripts/prove_controls.py`. It first runs the guard tests with no weakness (all must pass), then for each `UNSAFE_*` switch runs only the tests that guard that control and requires them to fail. A test that still passes with its control removed proves nothing, and the script prints `STILL PASSES (not proven)` and exits 1. The result in this repository: 10 of 10 guarding tests fail when their control is removed.
 
+### Every threat, in plain words
+
+The verification table in `docs/THREAT_MODEL.md` has 21 rows. Each says: who attacks, what they do, which control stops it, and which test proves it. (B1 is the browser-to-server boundary, B2 server-to-service, B3 service-to-database.)
+
+| ID | In plain words | The control | The test that proves it |
+| --- | --- | --- | --- |
+| T1 | Someone steals a session: a script reads the cookie, or it travels over plain HTTP. | A random 256-bit id in a cookie that scripts cannot read, only sent over HTTPS, with the server storing only its hash. | `test_session_cookie_flags` |
+| T2 | Session fixation: the attacker makes your browser use an id they know, then you sign in and they share your session. | A brand-new session id (and CSRF token) is issued at sign-in. | `test_the_session_id_changes_at_sign_in` |
+| T3 | Guessing passwords for one account. | A failure throttle per client and username, a `Retry-After` header, and a deliberately slow password hash. | `test_repeated_failures_are_throttled_with_retry_after_and_audited` |
+| T4 | CSRF: another website makes your browser send a request to this app with your cookie. | A per-session token required on every POST, PATCH and DELETE, plus `SameSite=Lax`. | `test_state_changing_request_without_csrf_token_is_refused` |
+| T5 | Stored XSS: markup saved in a note runs as a script when someone else opens it. | The page encodes output, and a CSP allows no script at all. | `test_hostile_content_is_rendered_as_inert_text` |
+| T6 | Clickjacking (the page framed invisibly), content-type sniffing, and the address leaking in `Referer`. | Security headers on every response. | `test_security_headers_on_every_response` |
+| T7 | One huge request body wastes the server. | A 64 KiB body limit and length limits in validation. | `test_an_oversized_body_is_refused` |
+| T8 | A sign-in or sign-out nobody can attribute afterwards. | An audit row and log line per sign-up, sign-in, failure, throttle and sign-out. | `test_sign_up_sign_in_failure_and_sign_out_are_audited` |
+| T9 | Reading, changing or deleting another user's note by editing the id in the address. | The note service checks ownership or sharing on every request, looking the answer up fresh; a note you may not see answers 404. | `test_user_a_cannot_read_update_or_delete_user_b_note` |
+| T10 | Mass assignment: sending an `owner_id` in the request body to take ownership. | The service takes the owner from the session, never from input. | `test_the_owner_in_the_request_body_is_ignored` |
+| T11 | Walking ids leaves no trace. | A `note.access_denied` audit row with the note id and the reason. | `test_a_denied_note_access_writes_a_log_line_and_an_audit_row` |
+| T12 | A user a note was shared with edits, deletes or re-shares it. | Sharing grants read only; other actions get 403. | `test_a_user_the_note_is_shared_with_can_read_but_not_change_or_share_it` |
+| T13 | Telling "no such user" from "wrong password" (user enumeration). | One message, one status, equal hashing effort for unknown users. | `test_unknown_user_and_wrong_password_look_identical` |
+| T14 | A password or note content ends up in a log file. | Bodies are never logged; the JSON formatter redacts sensitive field names. | `test_passwords_are_salted_and_not_logged` |
+| T15 | SQL injection through a note, title or sign-in form. | Parameterized statements only; a quote is data. | `test_hostile_content_is_stored_exactly_as_text` |
+| T16 | Passwords stored in plain text or with a fast hash. | Argon2id with a random salt per hash. | `test_passwords_are_salted_and_not_logged` |
+| T17 | A read of the database yields live sessions. | Sessions are keyed by the SHA-256 of the cookie value. | `test_session_cookie_flags` |
+| T18 | Someone rewrites the audit trail. | The application role has INSERT and SELECT only, and a trigger refuses UPDATE and DELETE for every role. | `test_the_application_role_cannot_change_or_delete_audit_rows` |
+| T19 | A compromised app changes the database schema. | The app connects as a role with no schema-changing rights. | `test_the_application_role_cannot_change_the_schema` |
+| T20 | Expired and anonymous sessions pile up. | Anonymous sessions live 15 minutes; expired rows are purged at every sign-in. | `test_purging_removes_only_expired_sessions` |
+| T21 | A forged request goes unnoticed. | A `csrf.rejected` audit row. | `test_a_forged_request_is_audited` |
+
+**Accepted risks (the document's second table).** A1: an attacker with physical access or root on the database server reads everything; an application cannot defend a host it does not control (disk encryption, network isolation and backups belong to the infrastructure layer). A2: a volumetric flood of requests; absorbing it is the job of the network edge (a CDN, a load balancer), the app only limits what one request can cost. A3: account takeover with a stolen or reused password and no second factor; multi-factor authentication is out of scope, and the next control to add. A4: passwords that appear in public breach lists are accepted if long enough; checking needs an external service or a large list. A5: plain HTTP between browser and app when no TLS terminator is in front; the app sets `Secure` cookies and HSTS and assumes a proxy ends HTTPS (`TRUSTED_PROXY_COUNT` tells it about the proxy).
+
+**The weaknesses and their guards** (`scripts/prove_controls.py`): `UNSAFE_WEAK_PASSWORD_HASH` is guarded by `test_passwords_are_salted_and_not_logged`; `UNSAFE_SQL_CONCATENATION` by `test_hostile_content_is_stored_exactly_as_text`; `UNSAFE_RAW_NOTE_OUTPUT` by `test_hostile_content_is_rendered_as_inert_text`; `UNSAFE_SKIP_OWNERSHIP_CHECK` by three authorization tests; `UNSAFE_WEAK_SESSION_COOKIE` by `test_session_cookie_flags`; `UNSAFE_SKIP_CSRF` by two session tests; `UNSAFE_SKIP_SECURITY_HEADERS` by `test_security_headers_on_every_response`. Ten guarding tests in all.
+
 ## Try it yourself
 
 1. Read the document: open `docs/THREAT_MODEL.md`; find T9 and the test it names.

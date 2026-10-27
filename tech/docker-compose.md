@@ -25,6 +25,16 @@ The lesson needs a real PostgreSQL and, optionally, the hardened app image next 
 4. `--wait` blocks until services with a health check report healthy.
 5. `down` stops and removes the containers and the network; `-v` also deletes their volumes (the database files live in the volume that the `postgres` image declares for its data directory; this file defines no volume of its own).
 
+### Ideas you need first
+
+- **An image and a container.** An image is a frozen, read-only package of a program and everything it needs. A container is a running copy of an image, isolated from the rest of the machine: its own files, its own processes, its own network address.
+- **A service.** In Compose, one named container to run (`postgres`, `app`).
+- **A port mapping.** `"127.0.0.1:5471:5432"` means "connections to port 5471 on this machine's loopback address are forwarded to port 5432 inside the container". Putting `127.0.0.1` in front keeps the port closed to other computers.
+- **A volume.** Storage that outlives a container. The PostgreSQL image declares one for its data directory; `docker compose down -v` deletes it.
+- **A network.** Compose creates a private one for the project. Containers reach each other by service name: the app connects to the host `postgres`.
+- **An environment variable.** A named text value passed into the container; `${NAME:-default}` in the YAML means "the variable `NAME`, or `default` if it is not set".
+- **A health check.** A command Docker runs repeatedly inside the container; exit code 0 means healthy. `--wait` makes Compose block until healthy.
+
 ## Walkthrough of this repository's use
 
 ```yaml

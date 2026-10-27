@@ -92,6 +92,19 @@ row = connection.execute(statement).fetchone()
 ```
 A title such as `It's` breaks the statement (a syntax error), and a title built by an attacker can add statements. It exists only so `make prove` can show the injection test fail. It is reachable only with `APP_ENV=test` and `UNSAFE_SQL_CONCATENATION=1`.
 
+### Every query in `sql/003_queries.sql`
+
+Run by `make queries`. The first line of each block is `\set name value`, a `psql` command (not SQL) that defines a variable; `:user_id` then inserts it.
+
+1. **Visible notes** (`\set user_id 1`): `SELECT n.id, n.title, CASE WHEN n.owner_id = :user_id THEN 'owner' ELSE 'reader' END AS role FROM notes n WHERE n.owner_id = :user_id OR EXISTS (SELECT 1 FROM note_shares s WHERE s.note_id = n.id AND s.user_id = :user_id) ORDER BY n.updated_at DESC, n.id DESC;` `n` and `s` are short names (**aliases**) for the tables. `CASE WHEN ... END` is an if-else that produces the column `role`. `EXISTS (subquery)` is true when the inner query finds any row: "a share row exists for this note and this user". This is the same statement as `LIST_VISIBLE` in the Python code.
+2. **Authorization inputs for one note** (`\set note_id 3`): `SELECT owner_id FROM notes WHERE id = :note_id;` and `SELECT user_id FROM note_shares WHERE note_id = :note_id;`: the two facts `NoteService` reads on every request.
+3. **Notes nobody but the owner can see:** `SELECT n.id, n.title, u.username AS owner FROM notes n JOIN users u ON u.id = n.owner_id WHERE NOT EXISTS (SELECT 1 FROM note_shares s WHERE s.note_id = n.id) ORDER BY n.id;` A **join** combines rows of two tables where the `ON` condition holds: each note is paired with its owner's row.
+4. **Live sessions per user:** `SELECT coalesce(u.username, '(anonymous)') AS who, count(*) AS sessions FROM sessions s LEFT JOIN users u ON u.id = s.user_id WHERE s.expires_at > now() GROUP BY u.username ORDER BY sessions DESC;` A `LEFT JOIN` keeps sessions that have no user (anonymous ones); `coalesce(a, b)` returns the first value that is not null; `GROUP BY` collapses rows with the same user and `count(*)` counts them.
+5. **Audit events by action and outcome:** `SELECT action, outcome, count(*) AS events, max(occurred_at) AS latest FROM audit_events GROUP BY action, outcome ORDER BY events DESC;`
+6. **Id walking:** `SELECT user_id, count(*) AS denials FROM audit_events WHERE action = 'note.access_denied' GROUP BY user_id HAVING count(*) >= 3 ORDER BY denials DESC;` `HAVING` filters groups after counting; three or more denials by one user is the signature of someone trying ids.
+
+`001_schema.sql`, `002_seed.sql`, `reset.sql` and the migrations are explained statement by statement in `tech/postgresql.md`.
+
 ## Try it yourself
 
 1. With `make up` done, run the lesson's queries: `make queries`. Expect several small tables.

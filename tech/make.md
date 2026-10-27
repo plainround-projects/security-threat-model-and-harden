@@ -25,6 +25,14 @@ The macOS version on this machine is GNU Make 3.81. The Makefile uses only featu
 4. Each recipe line starts with a **tab** (not spaces) and runs in its own `/bin/sh`. A line that fails stops `make`, unless the line starts with `-`.
 5. `@` before a line hides the command echo. `$(NAME)` expands a Make variable; `$$` writes a literal `$` for the shell.
 
+### Ideas you need first
+
+- **A build tool.** A program that runs a list of steps in the right order, and skips steps whose results are already up to date. Programmers use it so that one short command (`make test`) replaces a long sequence they would otherwise have to remember.
+- **A target, a prerequisite and a recipe.** In a `Makefile`, `name: other1 other2` followed by indented lines defines a **target** called `name`. `other1` and `other2` are its **prerequisites**: things that must be done first. The indented lines are the **recipe**: shell commands that make runs, one by one, each in its own shell.
+- **A file target and a phony target.** If the target name is a real file (like `.venv/.installed`), make runs the recipe only when the file is missing or older than a prerequisite. A **phony** target (listed after `.PHONY:`) is just a name for a job and always runs.
+- **A variable.** `NAME := value` stores text; `$(NAME)` uses it. `$@` means "this target's name". A doubled dollar, `$$`, passes a single `$` through to the shell.
+- **Tabs.** Recipe lines must start with a Tab character, not spaces.
+
 ## Walkthrough of this repository's use
 
 ### Variables
@@ -96,6 +104,47 @@ Two commands: run unit tests while measuring coverage, then fail the target if t
 ### Containers and cleanup
 
 `docker-build`, `docker-run` (`docker compose --profile app up -d --wait --build app`) and `down` (`docker compose --profile app down -v`; `-v` also deletes the data volume). `clean: down` depends on `down`, then removes the virtual environment and all tool caches with `rm -rf`.
+
+### Every target
+
+Every target in the `Makefile`, in file order, with what its recipe does. (`$(VENV)` is `.venv`, `$(PY)` is `.venv/bin/python`, `$(STAMP)` is `.venv/.installed`; a leading `@` hides the command from make's own echo.)
+
+| Target | Prerequisites | What the recipe does |
+| --- | --- | --- |
+| `help` | none | Searches the Makefile for lines like `target: ... ## text`, rewrites `:` and `##` as a tab, sorts them and prints them. This is how every `##` comment becomes help text. |
+| `$(STAMP)` | `requirements-dev.lock`, `pyproject.toml` | Creates the virtual environment, installs the locked dev packages, installs this project, then `touch`es the stamp file so make knows it is done (explained below). |
+| `install` | `$(STAMP)` | Nothing of its own: asking for `install` forces the stamp rule. |
+| `env` | none | `[ -f .env ] \|\| { cp .env.example .env; echo "created ..."; }`: create `.env` from the example only if it does not exist (`tech/bash.md`). |
+| `up` | `env`, `$(STAMP)` | `docker compose up -d --wait postgres`, then asks the database whether the table `users` exists and runs the `db` target only if it does not. |
+| `db` | none | Applies `sql/001_schema.sql` (passing the application role's password as `-v app_password=...`), `sql/002_seed.sql`, then every file in `sql/migrations/` in name order, printing `migrate <file>` for each. |
+| `queries` | none | Runs `sql/003_queries.sql` through `psql` inside the database container. |
+| `reset-db` | none | Runs `sql/reset.sql`, which empties every table. |
+| `run` | `env`, `$(STAMP)` | Starts gunicorn in the foreground (`$(SERVE)`). Ctrl-C stops it gracefully. |
+| `demo` | `env`, `$(STAMP)` | Runs `scripts/demo.sh`. |
+| `health` | `$(STAMP)` | Runs the `notes-app-health` command: exit 0 when `/readyz` answers 200. |
+| `lint` | `$(STAMP)` | Four commands in order: `ruff check .`, `ruff format --check .`, `mypy`, `lint-imports`. The first failure stops the recipe. |
+| `format` | `$(STAMP)` | `ruff check --fix .` then `ruff format .`: apply fixes and formatting. |
+| `test` | `$(STAMP)` | Unit tests with coverage, then `coverage report ... --fail-under=95` for the domain and application folders. |
+| `test-security` | `$(STAMP)` | `pytest tests/security -v`. Needs the database. |
+| `test-integration` | `$(STAMP)` | `pytest tests/integration -m integration`. |
+| `test-e2e` | `$(STAMP)` | `pytest tests/e2e -m e2e`. |
+| `test-all` | `test test-integration test-security test-e2e` | Runs the four test levels in that order. |
+| `prove` | `$(STAMP)` | `python scripts/prove_controls.py`. |
+| `audit` | `$(STAMP)` | `pip-audit --no-deps --disable-pip -r requirements-dev.lock`. |
+| `sbom` | `$(STAMP)` | `cyclonedx-py requirements requirements.lock --of JSON -o sbom.cdx.json`, then prints `wrote sbom.cdx.json`. |
+| `check` | `lint test` | Everything that needs no database. |
+| `docker-build` | none | `docker build -t security-threat-model-and-harden:dev .` |
+| `docker-run` | `env` | `docker compose --profile app up -d --wait --build app`. |
+| `down` | none | `docker compose --profile app down -v`: stop the containers and delete their data. |
+| `clean` | `down` | `rm -rf` the virtual environment, logs and every tool cache and the SBOM. |
+
+The first line of the Makefile is only a comment (every line starting with `#`). `.PHONY:` lists the names that are jobs, not files, so a file named `test` could never make `make test` say "up to date".
+
+#### How the stamp file works, step by step
+
+1. You type `make test`. Make sees that `test` needs `$(STAMP)`, the file `.venv/.installed`.
+2. If that file does not exist, or `requirements-dev.lock` or `pyproject.toml` is newer than it, make runs the stamp rule's recipe: `$(PYTHON) -m venv $(VENV)` creates a **virtual environment** (a private folder holding its own copy of the Python tools and its own installed packages, so this project's packages never collide with another project's); `pip install -q --require-hashes -r requirements-dev.lock` installs every locked package, refusing any file whose fingerprint is not in the lock (`tech/uv-and-lock-files.md`); `pip install -q --no-deps -e .` installs this project itself in "editable" mode (a link to `src/`, so edits take effect immediately); `touch $@` creates or updates the stamp file.
+3. If the file exists and is newer than both prerequisites, nothing is reinstalled.
 
 ## Try it yourself
 

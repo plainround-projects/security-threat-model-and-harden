@@ -34,6 +34,15 @@ Three of the lesson's threats live here: session theft (T1), CSRF (T4) and click
 
 **Why the CSRF token works.** A hostile page can make your browser *send* a request with your cookie, but cannot *read* your pages (the browser's same-origin rule), so it cannot learn the token. A request without the right token is refused.
 
+### Ideas you need first
+
+- **HTTP and a header.** HTTP is the text protocol of the web. A message is a first line, then header lines (`Name: value`), a blank line, and an optional body. Headers carry metadata: which cookie, what content type, what the browser should and should not do.
+- **A cookie.** A small value the server asks the browser to store (header `Set-Cookie: name=value; attributes`) and the browser sends back automatically with every later request to that site (header `Cookie: name=value`). Without cookies the server cannot tell that two requests come from the same person.
+- **A cookie attribute.** A setting stored with the cookie: `HttpOnly` (page scripts cannot read it), `Secure` (only sent over HTTPS), `SameSite=Lax` (not sent on cross-site POSTs), `Path=/` (sent for every path), `Max-Age` (seconds to keep it).
+- **An origin.** Scheme, host and port together (`https://example.com:443`). Browsers keep pages from different origins apart: a page from another site can make your browser *send* a request to this site but cannot *read* the answer. That asymmetry is why a secret token in a page defeats CSRF.
+- **A token.** A random value used as a password-like proof: here a session id and a CSRF token, both 256 bits from the operating system's secure random source.
+- **HTTPS.** HTTP wrapped in TLS encryption. This app expects HTTPS to be ended by a proxy in front of it (`TRUSTED_PROXY_COUNT`).
+
 ## Walkthrough of this repository's use
 
 ### The cookie

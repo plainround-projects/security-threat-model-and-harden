@@ -6,7 +6,7 @@
 
 ## Why this repository uses it
 
-Cross-site scripting (**XSS**) happens when a page prints text that a user typed and the browser mistakes it for code. The fix is **output encoding**: before printing, turn `<` into `&lt;` and so on. Jinja2 does this automatically for Flask's `.html` templates. The lesson's stored-XSS test saves `<script>alert(1)</script>` as a note and checks that the page shows it as harmless text.
+Cross-site scripting (**XSS**) happens when a page prints text that a user typed and the browser mistakes it for code. The fix is **output encoding**: before printing, turn `<` into `&lt;`, `>` into `&gt;`, `&` into `&amp;`, `"` into `&#34;` and `'` into `&#39;`, so the browser shows the characters instead of treating them as markup. Jinja2 does this automatically for Flask's `.html` templates. The lesson's stored-XSS test saves `<script>alert(1)</script>` as a note and checks that the page shows it as harmless text.
 
 ## Where it appears
 
@@ -86,6 +86,10 @@ The share form is shown only to the owner. That is for convenience only; the ser
 ### Form attributes that help validation
 
 `required`, `maxlength="32"`, `minlength="12"`, `type="password"`, `autocomplete="current-password"` and `autocomplete="new-password"` help the browser and password managers. They are not trusted: the server validates again in `domain/validation.py`.
+
+### The remaining templates
+
+`login.html` and `signup.html` each extend the frame and fill the title and content blocks. `login.html` shows `{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}` (`role="alert"` makes screen readers announce the message), then a form: `method="post" action="/login"`, a hidden input `csrf_token` whose value is `{{ csrf_token }}`, a text field `username` (`autocomplete="username"`, `required`, `maxlength="32"`), a password field (`type="password"`, `autocomplete="current-password"`, `maxlength="128"`), a submit button, and a link to `/signup`. `signup.html` is the same with `minlength` attributes (3 for the name, 12 for the password) and `autocomplete="new-password"` so password managers offer to generate one. `error.html` extends the frame, prints `{{ title }}` as the heading, the message if there is one, and a link home. `notes.html` loops over the notes (empty list: "No notes yet.") and has a creation form with `title` (`maxlength="120"`) and a `textarea` for `content` (`rows="6"`, `maxlength="10000"`). The form attributes only help honest users and password managers; the server validates every value again.
 
 ## Try it yourself
 

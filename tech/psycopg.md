@@ -74,7 +74,7 @@ Called from gunicorn's `worker_exit` hook (`tech/gunicorn.md`).
 row = connection.execute(SELECT_NOTE, (note_id,)).fetchone()
 return None if row is None else to_note(row)
 ```
-`%s` in the statement, a tuple of values (note the comma in `(note_id,)`: a one-item tuple). `fetchone()` returns a tuple or `None`. `to_note` maps columns to the `Note` dataclass using `int(str(row[0]))` and similar, because the row type is `tuple[object, ...]` and `mypy --strict` insists on checked conversions.
+`%s` in the statement, a tuple of values (note the comma in `(note_id,)`: a one-item tuple). `fetchone()` returns a tuple or `None`. `to_note` maps columns to the `Note` dataclass using `int(str(row[0]))` for the id columns and `str(...)` for the text columns, because the row type is `tuple[object, ...]` and `mypy --strict` insists on checked conversions.
 
 ```python
 rows = connection.execute(LIST_VISIBLE, {"user_id": user_id}).fetchall()
@@ -100,6 +100,22 @@ except UniqueViolation:
     raise UsernameTakenError(username) from None
 ```
 PostgreSQL error codes become Python exception classes. The unique constraint on `users.username` is what decides "taken"; the code does not look first. `PostgresAuditLog.record` catches `psycopg.Error` so an audit-table failure is logged loudly but does not fail the user's request (the structured log line written first is the fallback record).
+
+### Every statement the application runs
+
+All statements are constants with `%s` (or `%(name)s`) placeholders; values go in a separate tuple or dictionary.
+
+**`users.py`.** `INSERT INTO users (username, password_hash) VALUES (%s, %s) RETURNING id`; `SELECT id, username, password_hash FROM users WHERE username = %s`; the same `WHERE id = %s`; `UPDATE users SET password_hash = %s WHERE id = %s`. `add` catches `UniqueViolation`, the exception psycopg raises when the unique constraint refuses a row.
+
+**`notes.py`.** `INSERT INTO notes (owner_id, title, content) VALUES (%s, %s, %s) RETURNING id, owner_id, title, content, created_at, updated_at`; `SELECT ... FROM notes WHERE id = %s`; `UPDATE notes SET title = %s, content = %s, updated_at = now() WHERE id = %s RETURNING ...`; `DELETE FROM notes WHERE id = %s` (its shares disappear through `ON DELETE CASCADE`); `SELECT user_id FROM note_shares WHERE note_id = %s`; `INSERT INTO note_shares (note_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING` (sharing twice is a no-op); and `LIST_VISIBLE`, the join-and-`EXISTS` query with the named placeholder `%(user_id)s` used three times, passed as `{"user_id": user_id}`. `list_visible` turns each row into a `VisibleNote` with `NoteRole(str(row[7]))`.
+
+**`sessions.py`.** `INSERT INTO sessions (token_hash, user_id, csrf_token, created_at, last_seen_at, expires_at) VALUES (%s, %s, %s, %s, %s, %s)`; `SELECT ... WHERE token_hash = %s`; `UPDATE sessions SET last_seen_at = %s WHERE token_hash = %s`; `DELETE ... WHERE token_hash = %s`; `DELETE FROM sessions WHERE expires_at <= %s` (the number of rows removed is `cursor.rowcount`).
+
+**`throttle.py`.** `SELECT attempted_at FROM login_failures WHERE key_hash = %s AND attempted_at > %s`; `INSERT INTO login_failures (key_hash, attempted_at) VALUES (%s, %s)`; `DELETE FROM login_failures WHERE attempted_at <= %s` (prune what left the window); `DELETE FROM login_failures WHERE key_hash = %s` (reset after a good sign-in). The check passes the times to the pure function `retry_after_seconds`.
+
+**`audit.py`.** `INSERT INTO audit_events (action, outcome, user_id, ip, detail) VALUES (%s, %s, %s, %s, %s)` where `detail` is wrapped as `Jsonb(detail)` so the dictionary is stored as `jsonb`.
+
+Every method opens `with self._database.connection() as connection:`, so each is its own transaction: it commits when the block ends normally and rolls back if an exception leaves it.
 
 ## Try it yourself
 

@@ -29,6 +29,14 @@ Threat T16 in `docs/THREAT_MODEL.md` is "passwords stored in plaintext or with a
    Algorithm, version, parameters, salt and hash are all in the one string. To verify, the library reads the parameters from the stored string, hashes the typed password with the same salt, and compares.
 4. Because parameters are stored with each hash, you can raise them later: old hashes still verify, and after a successful sign-in the app re-hashes with the new parameters (**rehash on login**).
 
+### Ideas you need first
+
+- **A hash function.** A function that turns any input into a short fixed-size fingerprint. The same input always gives the same fingerprint; you cannot work backwards from the fingerprint to the input. SHA-256 is one (it produces 256 bits, written as 64 hexadecimal characters); it is fast, which is good for fingerprints and bad for passwords.
+- **A password hash.** A hash function built to be *slow* and *memory-hungry* on purpose, so a thief who steals the stored fingerprints can only test guesses slowly. Argon2 is one.
+- **A salt.** Random bytes mixed into each hash so two users with the same password get different fingerprints, and so precomputed lookup tables are useless. The salt is stored next to the hash; it is not secret.
+- **A cost parameter.** A setting that makes each hash take more time (`time_cost`, passes over memory) or more memory (`memory_cost`, in KiB), or more lanes (`parallelism`). Stored inside the hash string so old hashes still verify.
+- **Timing.** A server that answers faster for some inputs tells an attacker something. Equal work for known and unknown users hides which usernames exist.
+
 ## Walkthrough of this repository's use
 
 ### Parameters

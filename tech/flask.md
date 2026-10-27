@@ -30,6 +30,18 @@ The lesson is about the weaknesses of a web app, so the repository needs a small
 6. If anything raised, Flask looks for a registered **error handler** for that exception class and returns what it returns.
 7. `g` is an object that lives for exactly one request: a scratchpad that hooks and routes share. `request` and `g` look like globals but are bound to the current request.
 
+### Ideas you need first
+
+- **A client and a server.** A client (a browser, or a program like `curl`) asks; a server (this app) answers. They talk over the network. A **port** is a number (8047 here) that picks which program on a machine receives the connection, like an apartment number inside a building address. `127.0.0.1` is the machine's own address ("localhost"): connections to it never leave the machine.
+- **A request.** One message from client to server. It has a **method** (GET reads something, POST sends something new, PATCH changes part of something, DELETE removes it), a **path** (`/notes/3`), optional **query** text after a `?` (`?scope=x`), **headers** (named pieces of metadata, like `Cookie:` or `Accept:`), and an optional **body** (the data being sent: a form, or JSON).
+- **A response.** The reply: a **status code** (200 means OK, 201 created, 204 no content, 302 or 303 "go to another address", 400 bad request, 401 not signed in, 403 forbidden, 404 not found, 413 body too large, 429 too many requests, 500 server error, 503 unavailable), headers, and a body (an HTML page or JSON).
+- **JSON.** A text format for data. `{"id": 3, "title": "Groceries"}` is an object with two named values: curly braces hold named values, square brackets hold lists, strings are in double quotes, numbers are bare, and `true`, `false` and `null` are the other values. Python reads it into a dictionary.
+- **A form.** An HTML page element that sends the typed values to the server, as a POST with the values URL-encoded in the body (`username=alice&password=...`).
+- **A route.** A rule that says "requests for this method and path go to this function". Flask writes it as a decorator: `@app.get("/notes")`. `<int:note_id>` inside a path captures that part and converts it to a whole number.
+- **A hook.** A function Flask calls automatically at a fixed moment: `before_request` runs before every route, `after_request` after it.
+- **An error handler.** A function Flask calls when an exception of a given class escapes a route. It decides the response.
+- **A template.** An HTML file with holes the server fills in (`tech/jinja2-templates.md`).
+
 ## Walkthrough of this repository's use
 
 ### The application factory
@@ -125,6 +137,47 @@ See `tech/werkzeug.md`: only when the operator says how many proxies to trust do
 ### Weakness switches
 
 `app.jinja_env.autoescape = False` when `UNSAFE_RAW_NOTE_OUTPUT` is on, `WEAK_COOKIE` instead of `HARDENED_COOKIE`, and skipping the two hooks above. These exist so `make prove` can show the tests fail without the control. They are accepted only when `APP_ENV=test`.
+
+### Every route and hook, in order
+
+`create_app(container)` in `interfaces/http/app.py` builds the application. These are all its parts, in the order they appear in the file.
+
+**Setup.** `weak = settings.weaknesses`; `app = Flask(__name__)` (`__name__` is the module's own name, which tells Flask where to find its `templates/` and `static/` folders); `MAX_CONTENT_LENGTH` is set to 65,536; if the weakness `raw_note_output` is on, template escaping is turned off; if `TRUSTED_PROXY_COUNT` is above 0, `ProxyFix` wraps the app (`tech/werkzeug.md`); `cookie` is chosen: the hardened or the deliberately weak cookie attributes.
+
+**Hook `load_session` (before every request).** Stores a start time (`time.perf_counter()` is a precise stopwatch), a random request id (`uuid.uuid4().hex`, 32 hex characters), and the raw cookie value. For the three public endpoints (`healthz`, `readyz`, `static`) it stops there. Otherwise it asks `SessionService.resolve` for the live session and stores it on `g`.
+
+**Hook `enforce_csrf` (before every request; absent when the weakness `skip_csrf` is on).** Lets GET through. For POST, PUT, PATCH and DELETE it reads the token from the `X-CSRF-Token` header or the `csrf_token` form field, and if there is no session or the token does not match, it audits the refusal (method and path only) and raises `CsrfRejectedError`, which becomes a 403.
+
+**Hook `apply_security_headers` (after every request; absent when `skip_security_headers` is on).** Adds the headers (`tech/http-cookies-csrf-and-headers.md`).
+
+**Hook `finish` (after every request).** If a new session was issued, sets the session cookie; if the route asked, clears it; adds `Cache-Control: no-store` to non-public responses; writes one JSON log line with request id, method, path, status, duration in milliseconds and user id. It never logs the cookie, a form value or a header value.
+
+**`template_context`.** Adds `csrf_token` and `current_user` to every template.
+
+**Helpers.** `client_ip(request)` returns the caller's address; `wants_json(request)` is true for PATCH and DELETE, for a JSON body, or when the `Accept` header prefers JSON; `_ensure_session` returns the current session or starts an anonymous one; `_require_user` returns the signed-in user's id or raises the private `_Unauthenticated`; `_fields()` returns the request's input as one dictionary (the JSON object, or the form); `_text(fields, name)` returns a value only if it really is text.
+
+**The 14 routes.**
+
+| Route | Behavior |
+| --- | --- |
+| `GET /healthz` | Always `{"status":"ok"}`. Liveness: the process is running. |
+| `GET /readyz` | `{"status":"ready"}` if `container.database.ping()` works, otherwise 503 `{"status":"database unavailable"}`. This is what the container health check and `make health` call. |
+| `GET /` | Redirects (302) to `/notes` if signed in, else to `/login`. |
+| `GET /signup` | Starts an anonymous session (so the form has a CSRF token) and renders `signup.html`. |
+| `POST /signup` | Registers the user. On invalid input or a taken name it re-renders the form with status 400 and a message (the "taken" message is deliberately vague: "That username is not available."). On success, redirect 303 to `/login`. |
+| `GET /login` | Starts an anonymous session and renders `login.html`. |
+| `POST /login` | Calls `AccountService.authenticate`. A wrong credential re-renders the form with 401 and "Invalid username or password." (the throttle's 429 comes from the error handler). On success it calls `sign_in` with the old cookie (which deletes the old session: the new session id defeats fixation), stores the new session to be set as a cookie, and redirects 303 to `/notes`. |
+| `POST /logout` | Deletes the server-side session, marks the cookie to be cleared, audits `LOGOUT`, redirects 303 to `/login`. |
+| `GET /notes` | Lists the notes the user owns or has been given; JSON (`notes=[{id, title, role}]`) or the page. |
+| `POST /notes` | Creates a note from the form or JSON. Invalid input: JSON clients get the error handler's 400; form clients get the page again with status 400. Success: JSON 201 `{id}`, or redirect 303 to the note. |
+| `GET /notes/<int:note_id>` | Reads one note through the authorization check; JSON or `note.html`. |
+| `PATCH /notes/<int:note_id>` | Updates title and/or content (only fields that are text are used); JSON answer. |
+| `DELETE /notes/<int:note_id>` | Deletes; answers 204 with an empty body. |
+| `POST /notes/<int:note_id>/shares` | Shares with a username; form clients are redirected back to the note (303), JSON clients get 204. |
+
+Why `303` and not `302` after a POST? 303 "See Other" tells the browser to fetch the next address with GET, so refreshing the page does not send the form again.
+
+**Error handlers** (`_register_errors`). `respond(status, code, message)` answers JSON for API-style requests and an HTML page otherwise. The table: `InvalidInputError` is 400 with the field named; `NoteNotFoundError` 404; `NoteForbiddenError` 403; `CsrfRejectedError` 403; `LoginThrottledError` 429 with a `Retry-After` header (seconds to wait); `_Unauthenticated` is 401 JSON or a redirect to `/login`; `HTTPException` (Werkzeug's base for standard errors such as 404 for an unknown path) keeps its own code; and a catch-all `Exception` handler logs the traceback with the request id and answers a generic 500.
 
 ## Try it yourself
 

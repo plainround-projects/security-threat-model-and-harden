@@ -21,6 +21,7 @@ Notes describe the code as committed. Commands that need the database say `needs
 | [make.md](make.md) | The `Makefile`: one short command per task. |
 | [git.md](git.md) | History, and `.gitignore` for files that must never be committed. |
 | [editorconfig.md](editorconfig.md) | Editor settings shared by everyone. |
+| [markdown-and-mermaid.md](markdown-and-mermaid.md) | The documents: README, architecture with its diagram, decisions, threat model. |
 
 **2. Files and formats**
 
@@ -39,6 +40,7 @@ Notes describe the code as committed. Commands that need the database say `needs
 | [flask.md](flask.md) | The web framework: routes, hooks, error handlers. |
 | [werkzeug.md](werkzeug.md) | The library under Flask: proxy handling, errors, the test client. |
 | [jinja2-templates.md](jinja2-templates.md) | HTML templates and output encoding. |
+| [css.md](css.md) | The one stylesheet the pages load. |
 | [gunicorn.md](gunicorn.md) | The production server and graceful shutdown. |
 | [http-cookies-csrf-and-headers.md](http-cookies-csrf-and-headers.md) | Sessions, cookies, CSRF tokens, security headers. |
 | [argon2.md](argon2.md) | Password hashing. |
