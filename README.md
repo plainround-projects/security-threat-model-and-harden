@@ -8,6 +8,7 @@ A small notes app (sign up, sign in, write notes, share one with another user), 
 | **Planned hours** | 8 |
 | **Level** | Beginner |
 | **Architecture** | [ARCHITECTURE.md](ARCHITECTURE.md); threat model and verification note: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); decisions: [docs/adr](docs/adr) |
+| **Technology notes** | [tech/](tech/README.md): one beginner-level note per technology used here (Python, Bash, Make, Flask, PostgreSQL, Docker and the rest), written through this repository's own files |
 
 ## Prerequisites
 
@@ -177,6 +178,7 @@ tests/
   integration/       the PostgreSQL adapters; the application role's privileges.
   security/          one test per control of the threat model (the lesson's tests/security/).
   e2e/               a real server process: the scenario, SIGTERM, refusal to start.
+tech/                one note per technology, from zero, with an index (tech/README.md).
 docs/                THREAT_MODEL.md and adr/ (sessions, deliberate weaknesses, 404 versus 403, throttle state).
 scripts/             demo.sh, prove_controls.py.
 docker-compose.yml   PostgreSQL 18, and the app under the `app` profile.     Dockerfile  the app as an image.
