@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}{{ note.title }}{% endblock %}
+{% block content %}
+<h1>{{ note.title }}</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<pre class="note-content">{{ note.content }}</pre>
+{% if current_user and current_user.id == note.owner_id %}
+<form method="post" action="/notes/{{ note.id }}/shares">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Share with (username) <input name="username" required maxlength="32"></label>
+  <button type="submit">Share</button>
+</form>
+{% endif %}
+<p><a href="/notes">Back to your notes</a></p>
+{% endblock %}

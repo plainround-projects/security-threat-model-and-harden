@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Your notes{% endblock %}
+{% block content %}
+<h1>Your notes</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<ul class="notes">
+  {% for item in notes %}
+  <li><a href="/notes/{{ item.note.id }}">{{ item.note.title }}</a>
+    <small>{% if item.role.value == "owner" %}yours{% else %}shared by {{ item.owner_username }}{% endif %}</small></li>
+  {% else %}
+  <li>No notes yet.</li>
+  {% endfor %}
+</ul>
+<h2>New note</h2>
+<form method="post" action="/notes">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Title <input name="title" required maxlength="120"></label>
+  <label>Content <textarea name="content" rows="6" maxlength="10000"></textarea></label>
+  <button type="submit">Save note</button>
+</form>
+{% endblock %}
