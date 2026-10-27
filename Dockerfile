@@ -19,5 +19,5 @@ RUN useradd --system --uid 10001 --no-create-home app
 USER app
 
 EXPOSE 8047
-HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 CMD ["notes-app-health"]
+HEALTHCHECK --interval=15s --timeout=10s --start-period=30s --retries=5 CMD ["notes-app-health"]
 CMD ["gunicorn", "-c", "python:notes_app.interfaces.gunicorn_conf", "notes_app.interfaces.wsgi:build_app()"]
