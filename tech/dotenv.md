@@ -78,6 +78,238 @@ A typo in a number is an error at start-up, not a crash in the middle of a reque
 
 Where the format differs between tools: the `Makefile` and Compose both accept simple `NAME=value` lines; avoid quotes, spaces around `=`, and `$` in values, which they treat differently.
 
+### Line by line: `src/notes_app/infrastructure/settings.py`
+
+```python
+"""Configuration from the environment (twelve-factor), validated once at start-up."""
+```
+
+The docstring: configuration from the environment (the twelve-factor method), validated once at start-up.
+
+```python
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields
+from typing import Literal
+
+from notes_app.application.sessions import SessionPolicy
+```
+
+Imports: `Mapping`, `dataclass`, `field` and `fields` (to list a dataclass's fields), `Literal` and `SessionPolicy`.
+
+```python
+AppEnv = Literal["development", "test", "production"]
+_ENVIRONMENTS: tuple[AppEnv, ...] = ("development", "test", "production")
+_TRUE = {"1", "true", "yes", "on"}
+```
+
+`AppEnv` is a type that allows exactly three texts; `_ENVIRONMENTS` lists them; `_TRUE` is the set of texts that count as "on".
+
+```python
+# The OWASP Password Storage Cheat Sheet minimum for argon2id (19 MiB, 2 iterations, 1 lane).
+ARGON2_MIN_TIME_COST = 2
+ARGON2_MIN_MEMORY_KIB = 19_456
+```
+
+The comment cites the OWASP minimum for argon2id: 19 MiB of memory, 2 iterations, 1 lane. `19_456` is 19 times 1,024 kibibytes.
+
+```python
+class ConfigError(Exception):
+    """A setting is missing or invalid. Raised before the app serves anything."""
+```
+
+`ConfigError` is raised before the app serves anything.
+
+```python
+def _read_int(env: Mapping[str, str], name: str, default: int, *, minimum: int = 1) -> int:
+    raw = env.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be an integer, got {raw!r}") from None
+    if value < minimum:
+        raise ConfigError(f"{name} must be at least {minimum}, got {value}")
+    return value
+```
+
+`_read_int` returns the default for a missing or empty variable, raises `ConfigError` for text that is not a whole number or is below the minimum (`minimum` is keyword-only).
+
+```python
+@dataclass(frozen=True, slots=True)
+class Weaknesses:
+    """Deliberate weaknesses, one per control of the threat model, all off by default.
+
+    They exist so the test suite can prove each control by running the same tests with the control removed and
+    watching them fail. They are only accepted when ``APP_ENV=test``.
+    """
+```
+
+`Weaknesses` holds the deliberate weaknesses, one per control, all false by default. The docstring: they let the tests prove each control by running with it removed, and they are accepted only when `APP_ENV=test`.
+
+```python
+    weak_password_hash: bool = False
+    sql_concatenation: bool = False
+    raw_note_output: bool = False
+    skip_ownership_check: bool = False
+    weak_session_cookie: bool = False
+    skip_csrf: bool = False
+    skip_security_headers: bool = False
+```
+
+The seven switches: weak password hash, SQL concatenation, raw note output, skipped ownership check, weak session cookie, skipped CSRF and skipped security headers.
+
+```python
+    @classmethod
+    def from_environment(cls, env: Mapping[str, str]) -> Weaknesses:
+        """Read ``UNSAFE_<NAME>`` variables; anything but 1, true, yes or on means off."""
+        return cls(**{f.name: env.get(f"UNSAFE_{f.name.upper()}", "").lower() in _TRUE for f in fields(cls)})
+```
+
+`from_environment` reads `UNSAFE_<NAME>` for each field (the field name in upper case); only `1`, `true`, `yes` or `on` (any capitalization) turn it on.
+
+```python
+    def enabled(self) -> tuple[str, ...]:
+        """The names of the weaknesses that are switched on."""
+        return tuple(f.name for f in fields(self) if getattr(self, f.name))
+```
+
+`enabled` lists the names that are on.
+
+```python
+@dataclass(frozen=True, slots=True)
+class DatabaseSettings:
+    """Connection settings of the application's limited PostgreSQL role."""
+
+    host: str
+    port: int
+    name: str
+    user: str
+    password: str = field(repr=False)
+    pool_min: int = 1
+    pool_max: int = 8
+    connect_timeout_seconds: int = 5
+```
+
+`DatabaseSettings` holds host, port, name, user, password, pool sizes and the connect timeout. `field(repr=False)` keeps the password out of the printed form.
+
+```python
+    def conninfo(self) -> str:
+        """A libpq connection string. Contains the password; never log it."""
+        return (
+            f"host={self.host} port={self.port} dbname={self.name} user={self.user} "
+            f"password={self.password} connect_timeout={self.connect_timeout_seconds}"
+        )
+```
+
+`conninfo` builds the libpq connection string including the password; its docstring says never to log it.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """Everything the application reads from its environment."""
+
+    app_env: AppEnv
+    host: str
+    port: int
+    log_level: str
+    trusted_proxy_count: int
+    database: DatabaseSettings
+    argon2_time_cost: int
+    argon2_memory_kib: int
+    argon2_parallelism: int
+    session: SessionPolicy
+    login_max_failures: int
+    login_window_seconds: int
+    weaknesses: Weaknesses
+```
+
+`Settings` gathers every setting: environment name, host and port, log level, trusted proxy count, database, the three argon2 numbers, the session lifetimes, the login limit and window, and the weaknesses.
+
+```python
+    @classmethod
+    def from_environment(cls, env: Mapping[str, str]) -> Settings:
+        """Build and validate settings; raise ``ConfigError`` naming the first problem."""
+        app_env = env.get("APP_ENV", "production")
+        if app_env not in _ENVIRONMENTS:
+            raise ConfigError(f"APP_ENV must be one of {', '.join(_ENVIRONMENTS)}, got {app_env!r}")
+        password = env.get("NOTES_DB_PASSWORD", "")
+        if not password:
+            raise ConfigError("NOTES_DB_PASSWORD is required (set it in .env or the environment)")
+```
+
+`from_environment` checks `APP_ENV` (default `production`, the safe default) and refuses to start without `NOTES_DB_PASSWORD`: there is no default password.
+
+```python
+        settings = cls(
+            app_env=app_env,
+            host=env.get("APP_HOST", "127.0.0.1"),
+            port=_read_int(env, "APP_PORT", 8047),
+            log_level=env.get("LOG_LEVEL", "INFO").upper(),
+            trusted_proxy_count=_read_int(env, "TRUSTED_PROXY_COUNT", 0, minimum=0),
+            database=DatabaseSettings(
+                host=env.get("NOTES_DB_HOST", "localhost"),
+                port=_read_int(env, "NOTES_DB_PORT", 5471),
+                name=env.get("NOTES_DB_NAME", "notes"),
+                user=env.get("NOTES_DB_USER", "notes_app"),
+                password=password,
+                pool_min=_read_int(env, "NOTES_DB_POOL_MIN", 1),
+                pool_max=_read_int(env, "NOTES_DB_POOL_MAX", 8),
+            ),
+            argon2_time_cost=_read_int(env, "ARGON2_TIME_COST", ARGON2_MIN_TIME_COST),
+            argon2_memory_kib=_read_int(env, "ARGON2_MEMORY_KIB", ARGON2_MIN_MEMORY_KIB),
+            argon2_parallelism=_read_int(env, "ARGON2_PARALLELISM", 1),
+            session=SessionPolicy(
+                idle_seconds=_read_int(env, "SESSION_IDLE_SECONDS", 1800),
+                absolute_seconds=_read_int(env, "SESSION_ABSOLUTE_SECONDS", 28800),
+                anonymous_seconds=_read_int(env, "ANONYMOUS_SESSION_SECONDS", 900),
+            ),
+            login_max_failures=_read_int(env, "LOGIN_MAX_FAILURES", 5),
+            login_window_seconds=_read_int(env, "LOGIN_WINDOW_SECONDS", 900),
+            weaknesses=Weaknesses.from_environment(env),
+        )
+```
+
+It builds the object, reading each variable with its default: host `127.0.0.1`, port 8047, log level `INFO`, trusted proxies 0 (minimum 0), database `localhost:5471/notes` as `notes_app`, pool 1 to 8, argon2 at the OWASP minimum, session idle 1800 s, absolute 28800 s, anonymous 900 s, five failures in a 900 s window, and the weaknesses.
+
+```python
+        settings._validate()
+        return settings
+```
+
+`_validate` runs, then the settings are returned.
+
+```python
+    def _validate(self) -> None:
+        enabled = self.weaknesses.enabled()
+        if enabled and self.app_env != "test":
+            raise ConfigError(f"deliberate weaknesses ({', '.join(enabled)}) are only accepted when APP_ENV=test")
+```
+
+If any weakness is on outside `APP_ENV=test`, startup is refused, so a copied test configuration cannot weaken production.
+
+```python
+        weak_argon2 = self.argon2_time_cost < ARGON2_MIN_TIME_COST or self.argon2_memory_kib < ARGON2_MIN_MEMORY_KIB
+        if weak_argon2 and self.app_env != "test":
+            raise ConfigError(
+                f"argon2 parameters are below the OWASP minimum ({ARGON2_MIN_TIME_COST} iterations, "
+                f"{ARGON2_MIN_MEMORY_KIB} KiB)"
+            )
+```
+
+Argon2 parameters below the OWASP minimum are refused outside test mode.
+
+```python
+        if self.database.pool_min > self.database.pool_max:
+            raise ConfigError("NOTES_DB_POOL_MIN must not exceed NOTES_DB_POOL_MAX")
+        if self.session.anonymous_seconds > self.session.absolute_seconds:
+            raise ConfigError("ANONYMOUS_SESSION_SECONDS must not exceed SESSION_ABSOLUTE_SECONDS")
+```
+
+The pool minimum may not exceed the maximum, and the anonymous session may not outlive the absolute session.
+
 ## Try it yourself
 
 1. Create the file and see it is ignored:

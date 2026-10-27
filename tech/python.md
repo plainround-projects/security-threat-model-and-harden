@@ -298,6 +298,1364 @@ A **regular expression** (regex) describes a text pattern: here 3 to 32 characte
 
 **`scripts/prove_controls.py`** is the "remove each control" proof (`tech/stride-threat-modeling.md`). `GUARDS` is a dictionary from a weakness name to the tuple of test ids that must fail when it is on. `run_pytest(node_ids, weakness)` runs `python -m pytest ... -rA --tb=no` as a **subprocess** (a child process) with a copy of the environment minus any `UNSAFE_*` variables, plus `APP_ENV=test` and the chosen weakness, captures the output, and reads lines starting with `PASSED`, `FAILED` or `ERROR` into a dictionary of results. `main` first runs every guard with no weakness (all must pass), then each weakness and prints `FAILS without the control (proven)` or `STILL PASSES (not proven)`, and exits 1 if any is unproven.
 
+### Line by line: `src/notes_app/__init__.py`
+
+A file named `__init__.py` marks a folder as a Python **package**, a folder of modules that can be imported by name. Whatever it contains runs the first time the package is imported.
+
+```python
+"""A notes app, threat-modeled with STRIDE and hardened one control at a time."""
+
+__version__ = "0.1.0"
+```
+
+A **docstring** (text in triple quotes at the top of a file; Python stores it and tools can show it) saying what the package is, and `__version__`, a plain variable holding the version text by convention.
+
+### Line by line: `src/notes_app/application/__init__.py`
+
+```python
+"""Use cases of the notes app and the ports they need. Depends on the domain only."""
+```
+
+The marker file of the `application` layer: the use cases and the **ports** they need (descriptions of what the outside world must provide). It may import only the domain layer, and import-linter fails the build if that ever changes.
+
+### Line by line: `src/notes_app/domain/__init__.py`
+
+```python
+"""Rules and value objects of the notes app. Depends on nothing outside the standard library."""
+```
+
+The marker of the `domain` layer: the rules and plain data of the application, using only Python's standard library.
+
+### Line by line: `src/notes_app/infrastructure/__init__.py`
+
+```python
+"""Adapters: PostgreSQL, argon2, logging, settings, the clock. Depends on the application and domain layers."""
+```
+
+The marker of the `infrastructure` layer: the adapters for PostgreSQL, argon2, logging, settings and the clock.
+
+### Line by line: `src/notes_app/infrastructure/postgres/__init__.py`
+
+```python
+"""PostgreSQL adapters. Every statement binds its values as parameters; none builds SQL from input."""
+```
+
+The marker of the PostgreSQL adapter package. Its docstring states the rule: every statement binds its values as parameters and none builds SQL from input.
+
+### Line by line: `src/notes_app/infrastructure/weaknesses/__init__.py`
+
+```python
+"""Deliberately weakened variants of controls, one per control, switched on only by ``UNSAFE_*`` settings and only
+under ``APP_ENV=test``. Tests run the same assertions with a weakness on and watch them fail, which proves each
+control. Nothing in here is reachable in a normal run."""
+```
+
+The marker of the package of deliberately weakened controls. The docstring explains the idea: one weakened variant per control, switched on only by `UNSAFE_*` settings and only when `APP_ENV=test`. Tests run the same assertions with a weakness switched on and watch them fail, which proves the control is what makes them pass. Nothing here is reachable in a normal run.
+
+### Line by line: `src/notes_app/interfaces/__init__.py`
+
+```python
+"""Entry points: the HTTP application, the WSGI and gunicorn wiring, and the command-line programs. Nothing depends
+on this layer."""
+```
+
+The marker of the `interfaces` layer: the HTTP application, the WSGI and gunicorn wiring and the command-line programs. Nothing depends on this layer.
+
+### Line by line: `src/notes_app/interfaces/http/__init__.py`
+
+```python
+"""The Flask application: routes, templates, session cookie, CSRF check and security headers."""
+```
+
+The marker of the `http` package: routes, templates, the session cookie, the CSRF check and the security headers.
+
+### Line by line: `src/notes_app/domain/access.py`
+
+```python
+"""The authorization rule for notes, as a pure function so it can be tested without a database."""
+```
+
+The docstring: the authorization rule for notes as a **pure function** (it reads only its arguments and returns a value, with no database or file), so it can be tested without a database.
+
+```python
+from __future__ import annotations
+```
+
+`from __future__ import annotations` keeps type hints as text instead of evaluating them when the file loads.
+
+```python
+from collections.abc import Collection
+from enum import IntEnum
+```
+
+`Collection` is the type name for "anything you can ask `in` and `len` of" (a set, a list). `IntEnum` is an enumeration whose members are also integers, so they can be compared with `<` and `>=`.
+
+```python
+class Access(IntEnum):
+    """What a user may do with one note. Ordered: each level includes the one below."""
+
+    NONE = 0
+    READ = 1
+    WRITE = 2
+```
+
+`Access` is a closed list of three levels: `NONE` (0), `READ` (1) and `WRITE` (2). The docstring notes they are ordered, each including the one below, so `access >= Access.READ` means "may at least read".
+
+```python
+def access_to_note(*, owner_id: int, shared_with: Collection[int], user_id: int) -> Access:
+    """The owner may read and write; a user the note is shared with may read; everyone else gets nothing."""
+    if user_id == owner_id:
+        return Access.WRITE
+    if user_id in shared_with:
+        return Access.READ
+    return Access.NONE
+```
+
+`access_to_note` takes keyword-only arguments (the `*` forces names at the call, so the owner id and the user id cannot be swapped by mistake). The owner gets `WRITE`; a user in the `shared_with` collection gets `READ`; everyone else gets `NONE`. This is the whole authorization rule of the application, in seven lines.
+
+### Line by line: `src/notes_app/domain/errors.py`
+
+```python
+"""Named errors. Each one maps to exactly one HTTP outcome at the interface layer."""
+```
+
+The docstring: each named error maps to exactly one HTTP outcome in the interface layer.
+
+```python
+from __future__ import annotations
+```
+
+Type hints kept as text.
+
+```python
+class NotesError(Exception):
+    """Base class of every error the application raises on purpose."""
+```
+
+`NotesError` is the base class of every error raised on purpose. One `except NotesError` catches all of them, while a real bug (any other error type) stays visible.
+
+```python
+class InvalidInputError(NotesError):
+    """A value failed validation at a boundary."""
+
+    def __init__(self, field: str, reason: str) -> None:
+        super().__init__(f"{field}: {reason}")
+        self.field = field
+        self.reason = reason
+```
+
+`InvalidInputError` is for a value that failed validation. It keeps the `field` and the `reason` as attributes; `super().__init__(...)` calls the parent constructor with the combined message `"field: reason"`.
+
+```python
+class UsernameTakenError(NotesError):
+    """Sign-up asked for a username that already exists."""
+```
+
+`UsernameTakenError`: sign-up asked for a username that exists.
+
+```python
+class AuthenticationFailedError(NotesError):
+    """Sign-in failed. The message never says whether the username or the password was wrong."""
+```
+
+`AuthenticationFailedError`: sign-in failed. The docstring states the rule that its message never says whether the username or the password was wrong, so an attacker cannot learn which usernames exist.
+
+```python
+class LoginThrottledError(NotesError):
+    """Too many failed sign-ins for this client and username in the window."""
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__(f"too many failed sign-ins, retry in {retry_after_seconds} seconds")
+        self.retry_after_seconds = retry_after_seconds
+```
+
+`LoginThrottledError`: too many failed sign-ins. It carries `retry_after_seconds`, which the web layer puts in the `Retry-After` header.
+
+```python
+class NoteNotFoundError(NotesError):
+    """The note does not exist, or the caller may not know that it does.
+
+    Both cases raise this one error so a response never confirms which ids exist.
+    """
+```
+
+`NoteNotFoundError`: the note does not exist, or the caller may not know that it does. Using one error for both cases means a response never confirms which ids exist.
+
+```python
+class NoteForbiddenError(NotesError):
+    """The caller can see the note but lacks the right for this action (a reader trying to edit)."""
+```
+
+`NoteForbiddenError`: the caller can see the note but lacks the right for this action, for example a reader trying to edit.
+
+```python
+class CsrfRejectedError(NotesError):
+    """A state-changing request arrived without the session's CSRF token."""
+```
+
+`CsrfRejectedError`: a state-changing request arrived without the session's CSRF token (`tech/http-cookies-csrf-and-headers.md`).
+
+### Line by line: `src/notes_app/domain/models.py`
+
+```python
+"""Immutable value objects of the notes app."""
+```
+
+The docstring: immutable value objects, meaning records that cannot change after creation.
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+```
+
+Imports: `dataclass` (writes the repetitive methods of a data-holding class), `datetime` (a date and time) and `StrEnum` (an enumeration whose members behave like strings).
+
+```python
+@dataclass(frozen=True, slots=True)
+class User:
+    """A registered user. ``password_hash`` is an encoded argon2id hash, never a password."""
+
+    id: int
+    username: str
+    password_hash: str = ""
+```
+
+`User` is a frozen dataclass (`frozen=True` makes fields read-only after creation; `slots=True` stores them in a fixed compact structure). The password field holds an encoded argon2id hash, never a password; its default is the empty text.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Note:
+    """A note and its owner."""
+
+    id: int
+    owner_id: int
+    title: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+```
+
+`Note` has an id, the owner's id, a title and content, and two timestamps.
+
+```python
+class NoteRole(StrEnum):
+    """How the requesting user relates to a note they can see."""
+
+    OWNER = "owner"
+    READER = "reader"
+```
+
+`NoteRole` has two members: `OWNER` and `READER`, how the requester relates to a note they can see.
+
+```python
+@dataclass(frozen=True, slots=True)
+class VisibleNote:
+    """A note together with the requester's role, as listed on the notes page."""
+
+    note: Note
+    role: NoteRole
+    owner_username: str
+```
+
+`VisibleNote` pairs a note with the requester's role and the owner's username, as listed on the notes page.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Session:
+    """A server-side session. ``user_id`` is ``None`` until sign-in (an anonymous session carries the CSRF token
+    of the sign-in form)."""
+
+    token_hash: str
+    user_id: int | None
+    csrf_token: str
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+```
+
+`Session` is a server-side session. Only the hash of the cookie value is stored (`token_hash`), so a stolen database does not reveal usable cookies. `user_id` is `None` until sign-in: an anonymous session exists so the sign-in form can carry a CSRF token. The three times are creation, last activity and absolute expiry.
+
+```python
+class AuditAction(StrEnum):
+    """Security events worth an audit row."""
+
+    SIGNUP = "signup"
+    LOGIN_SUCCESS = "login.success"
+    LOGIN_FAILURE = "login.failure"
+    LOGIN_THROTTLED = "login.throttled"
+    LOGOUT = "logout"
+    NOTE_ACCESS_DENIED = "note.access_denied"
+    NOTE_SHARED = "note.shared"
+    NOTE_DELETED = "note.deleted"
+    CSRF_REJECTED = "csrf.rejected"
+```
+
+`AuditAction` lists the nine security events that get an audit row: sign-up, login success, failure and throttled, logout, note access denied, note shared, note deleted, and CSRF rejected. The text value (such as `login.failure`) is what is stored.
+
+```python
+@dataclass(frozen=True, slots=True)
+class AuditEvent:
+    """One security-relevant event. ``detail`` holds ids and reasons only, never credentials or free text."""
+
+    action: AuditAction
+    outcome: str
+    user_id: int | None
+    ip: str
+    detail: tuple[tuple[str, str], ...] = ()
+```
+
+`AuditEvent` is one event: the action, an outcome text, the user id (or `None`), the client's IP and a `detail` tuple of key-value pairs. The docstring rule: detail holds ids and reasons only, never credentials or free text. Pairs are used instead of a dictionary because a frozen dataclass should hold only immutable values.
+
+### Line by line: `src/notes_app/domain/throttle.py`
+
+```python
+"""The sliding-window rule behind the sign-in throttle, as a pure function."""
+```
+
+The docstring: the **sliding-window** rule behind the sign-in throttle. A sliding window counts only the events of the last N minutes, so old failures stop counting by themselves.
+
+```python
+from __future__ import annotations
+
+from collections.abc import Iterable
+from datetime import datetime, timedelta
+```
+
+Imports: `Iterable` (anything you can loop over) and `datetime` with `timedelta` (a length of time).
+
+```python
+def retry_after_seconds(
+    failures: Iterable[datetime], *, now: datetime, max_failures: int, window: timedelta
+) -> int | None:
+```
+
+The function takes the earlier failure times, and keyword-only `now`, `max_failures` and `window`. It returns the seconds to wait, or `None` when the key is under its limit.
+
+```python
+    """Seconds until another attempt is allowed, or ``None`` when the key is under its limit.
+
+    ``failures`` are the timestamps of earlier failed sign-ins. Only those inside the window count; once
+    ``max_failures`` of them are inside it, the next attempt waits until the oldest of those ages out.
+    """
+```
+
+The docstring spells out the rule: only failures inside the window count; once `max_failures` of them are inside it, the next attempt waits until the oldest of those ages out.
+
+```python
+    live = sorted(moment for moment in failures if moment > now - window)
+```
+
+`live` is the sorted list of failure times that are later than `now - window` (still inside the window).
+
+```python
+    if len(live) < max_failures:
+        return None
+```
+
+If fewer than the limit are live, the answer is `None`: no waiting.
+
+```python
+    blocking = live[len(live) - max_failures]
+    return max(int((blocking + window - now).total_seconds()) + 1, 1)
+```
+
+`blocking` is the failure that must age out: the one `max_failures` places from the end of the sorted list. The wait is the time until that failure plus the window, converted to whole seconds, plus one second so the wait never ends a moment too early, and never less than 1. For example with a limit of 5 and a window of 15 minutes, five failures at times t1 to t5 block until t1 plus 15 minutes.
+
+### Line by line: `src/notes_app/domain/validation.py`
+
+```python
+"""Input validation at the boundary: allow-lists and length limits, no escaping (that is the output's job)."""
+```
+
+The docstring: input validation at the boundary with **allow-lists** (state what is allowed, refuse the rest) and length limits. It does not escape anything; escaping is the output's job.
+
+```python
+from __future__ import annotations
+```
+
+Type hints kept as text.
+
+```python
+import re
+
+from notes_app.domain.errors import InvalidInputError
+```
+
+`re` is Python's regular-expression module, and `InvalidInputError` comes from the same layer.
+
+```python
+USERNAME_PATTERN = re.compile(r"[a-z0-9_]{3,32}")
+PASSWORD_MIN_LENGTH = 12
+PASSWORD_MAX_LENGTH = 128
+TITLE_MAX_LENGTH = 120
+CONTENT_MAX_LENGTH = 10_000
+```
+
+The limits as named constants. `USERNAME_PATTERN` is a **regular expression** (a text pattern): `[a-z0-9_]` means one lower-case letter, digit or underscore and `{3,32}` means 3 to 32 of them. Passwords are 12 to 128 characters; titles at most 120; content at most 10,000 (`10_000` is ten thousand, the underscore is only for reading).
+
+```python
+def validate_username(raw: str) -> str:
+    """Return the canonical (lower-case) username or raise ``InvalidInputError``."""
+    username = raw.strip().lower()
+    if USERNAME_PATTERN.fullmatch(username) is None:
+        raise InvalidInputError("username", "use 3 to 32 letters, digits or underscores")
+    return username
+```
+
+`validate_username` removes spaces at the ends and lower-cases the text, so `Alice` and `alice` are the same account. `fullmatch` requires the whole text to match the pattern; anything else raises `InvalidInputError` for the field `username`. The cleaned text is returned.
+
+```python
+def validate_password(raw: str) -> str:
+    """Length is the only rule that matters (NIST SP 800-63B); the upper bound stops hash-time abuse."""
+    if not PASSWORD_MIN_LENGTH <= len(raw) <= PASSWORD_MAX_LENGTH:
+        raise InvalidInputError("password", f"use {PASSWORD_MIN_LENGTH} to {PASSWORD_MAX_LENGTH} characters")
+    return raw
+```
+
+`validate_password` checks only the length. The docstring cites NIST SP 800-63B, a US standard that says length is what matters and composition rules (needing a digit and a symbol) do not help. The upper bound stops someone from sending a megabyte "password" to make the server spend time hashing it.
+
+```python
+def validate_note_title(raw: str) -> str:
+    """A note title is one non-empty line of at most 120 characters."""
+    title = raw.strip()
+    if not title or len(title) > TITLE_MAX_LENGTH:
+        raise InvalidInputError("title", f"use 1 to {TITLE_MAX_LENGTH} characters")
+    if "\x00" in title or "\n" in title or "\r" in title:
+        raise InvalidInputError("title", "use a single line")
+    return title
+```
+
+`validate_note_title` removes the ends' spaces, then refuses an empty title or one over 120 characters, and refuses a NUL character, a newline or a carriage return so a title is one line.
+
+```python
+def validate_note_content(raw: str) -> str:
+    """Note content is free text up to 10,000 characters. Markup is allowed because output encoding handles it;
+    a NUL byte is refused because PostgreSQL cannot store it."""
+    if len(raw) > CONTENT_MAX_LENGTH:
+        raise InvalidInputError("content", f"use at most {CONTENT_MAX_LENGTH} characters")
+    if "\x00" in raw:
+        raise InvalidInputError("content", "remove the NUL character")
+    return raw
+```
+
+`validate_note_content` allows up to 10,000 characters of free text, including markup, because the page encodes it on output. A NUL character is refused because PostgreSQL cannot store it.
+
+### Line by line: `src/notes_app/application/policy.py`
+
+```python
+"""The production access policy: the domain rule, nothing more."""
+```
+
+The docstring: the production access policy is the domain rule, nothing more.
+
+```python
+from __future__ import annotations
+
+from collections.abc import Collection
+
+from notes_app.domain.access import Access, access_to_note
+```
+
+Imports: `Collection` and the domain's `Access` and `access_to_note`.
+
+```python
+class OwnerOrSharedPolicy:
+    """Owner writes, a user the note is shared with reads, everyone else gets nothing."""
+
+    def access(self, *, owner_id: int, shared_with: Collection[int], user_id: int) -> Access:
+        """The level of access the user has to the note."""
+        return access_to_note(owner_id=owner_id, shared_with=shared_with, user_id=user_id)
+```
+
+`OwnerOrSharedPolicy` is the production implementation of the `AccessPolicy` port: its one method `access` just calls the pure domain function. It exists so the policy can be replaced: a test swaps in the deliberately open policy from `weaknesses/open_policy.py` to prove the authorization tests fail without the real rule.
+
+### Line by line: `src/notes_app/application/ports.py`
+
+A **port** is an interface: a list of method names and types that a use case needs, with no code. The real work is done by an adapter in `infrastructure`; tests use fakes.
+
+```python
+"""Ports: what the use cases need from the outside world. Adapters live in ``infrastructure``."""
+```
+
+The docstring: ports are what the use cases need from the outside world.
+
+```python
+from __future__ import annotations
+```
+
+Type hints kept as text.
+
+```python
+from collections.abc import Collection
+from datetime import datetime
+from typing import Protocol
+```
+
+`Collection`, `datetime` and `Protocol`. A `Protocol` describes an interface by shape: any class with these methods counts as an implementation, without inheriting from anything.
+
+```python
+from notes_app.domain.access import Access
+from notes_app.domain.models import AuditEvent, Note, Session, User, VisibleNote
+```
+
+Imports of the domain pieces used in the signatures.
+
+```python
+class UserRepository(Protocol):
+    """Storage of users."""
+
+    def add(self, username: str, password_hash: str) -> User:
+        """Insert a user; raise ``UsernameTakenError`` when the username exists."""
+
+    def by_username(self, username: str) -> User | None:
+        """Find a user by canonical username."""
+
+    def by_id(self, user_id: int) -> User | None:
+        """Find a user by id."""
+
+    def update_password_hash(self, user_id: int, password_hash: str) -> None:
+        """Replace the stored hash (after a parameter upgrade)."""
+```
+
+`UserRepository`: `add` (raises `UsernameTakenError` if the name exists), `by_username`, `by_id`, and `update_password_hash` (used after a parameter upgrade). The methods have only a docstring as body, which is legal Python and enough for a Protocol.
+
+```python
+class NoteRepository(Protocol):
+    """Storage of notes and their shares. Every method takes values; none builds SQL from them."""
+
+    def add(self, owner_id: int, title: str, content: str) -> Note:
+        """Insert a note."""
+
+    def get(self, note_id: int) -> Note | None:
+        """Fetch one note by id, whoever owns it. Authorization is the service's job."""
+
+    def shared_with(self, note_id: int) -> frozenset[int]:
+        """The ids of the users a note is shared with."""
+
+    def update(self, note_id: int, title: str, content: str) -> Note:
+        """Replace a note's title and content."""
+
+    def delete(self, note_id: int) -> None:
+        """Delete a note and its shares."""
+
+    def share(self, note_id: int, user_id: int) -> None:
+        """Share a note with a user (idempotent)."""
+
+    def list_visible(self, user_id: int) -> list[VisibleNote]:
+        """Every note the user owns or has been given, newest first."""
+```
+
+`NoteRepository`: `add`, `get` (any note, whoever owns it; authorization is the service's job), `shared_with` (a frozen set of user ids), `update`, `delete`, `share` (idempotent: sharing twice is the same as once) and `list_visible` (every note the user owns or was given, newest first). The docstring rule: every method takes values and none builds SQL from them.
+
+```python
+class SessionRepository(Protocol):
+    """Storage of sessions, keyed by the hash of the cookie value."""
+
+    def add(self, session: Session) -> None:
+        """Insert a session."""
+
+    def get(self, token_hash: str) -> Session | None:
+        """Fetch a session by token hash."""
+
+    def touch(self, token_hash: str, seen_at: datetime) -> None:
+        """Record activity."""
+
+    def delete(self, token_hash: str) -> None:
+        """Remove a session (sign-out or rotation)."""
+
+    def purge_expired(self, now: datetime) -> int:
+        """Remove every session past its absolute expiry; return how many."""
+```
+
+`SessionRepository`: sessions are keyed by the hash of the cookie value. `add`, `get`, `touch` (record activity), `delete` (sign-out or rotation) and `purge_expired`, which removes sessions past their absolute expiry and returns how many.
+
+```python
+class AuditLog(Protocol):
+    """Append-only record of security events."""
+
+    def record(self, event: AuditEvent) -> None:
+        """Write one event."""
+```
+
+`AuditLog`: append-only, with one method `record`.
+
+```python
+class PasswordHasher(Protocol):
+    """Slow, salted password hashing."""
+
+    def hash(self, password: str) -> str:
+        """Hash with a fresh random salt."""
+
+    def verify(self, password: str, encoded: str) -> bool:
+        """Constant-effort check of a password against a stored hash."""
+
+    def needs_rehash(self, encoded: str) -> bool:
+        """True when the stored hash uses weaker parameters than the current ones."""
+
+    def spend_equal_effort(self, password: str) -> None:
+        """Do the work of a verification for a user that does not exist, so timing does not reveal them."""
+```
+
+`PasswordHasher`: `hash` (with a fresh random salt), `verify` (constant-effort check), `needs_rehash` (the stored hash uses weaker parameters than the current ones) and `spend_equal_effort`, which does the work of a verification for a user that does not exist so that the time taken does not reveal which usernames exist.
+
+```python
+class LoginThrottle(Protocol):
+    """Limits failed sign-ins per client and username."""
+
+    def check(self, key: str, now: datetime) -> None:
+        """Raise ``LoginThrottledError`` when the key is over the limit."""
+
+    def record_failure(self, key: str, now: datetime) -> None:
+        """Count one failed sign-in."""
+
+    def reset(self, key: str) -> None:
+        """Forget the failures (after a successful sign-in)."""
+```
+
+`LoginThrottle`: `check` raises when the key is over the limit, `record_failure` counts one failure and `reset` forgets failures after a good sign-in.
+
+```python
+class AccessPolicy(Protocol):
+    """Decides what a user may do with a note."""
+
+    def access(self, *, owner_id: int, shared_with: Collection[int], user_id: int) -> Access:
+        """The level of access the user has."""
+```
+
+`AccessPolicy`: one method returning the `Access` level.
+
+```python
+class Clock(Protocol):
+    """Time, injected so tests are deterministic."""
+
+    def now(self) -> datetime:
+        """The current time, timezone-aware (UTC)."""
+```
+
+`Clock`: `now()` returns the current time with a time zone (UTC). It is injected so tests can control time.
+
+```python
+class TokenGenerator(Protocol):
+    """Unguessable tokens for sessions and CSRF."""
+
+    def new_token(self) -> str:
+        """A URL-safe token with at least 256 bits of randomness."""
+```
+
+`TokenGenerator`: `new_token()` returns a URL-safe token with at least 256 bits of randomness, for sessions and CSRF.
+
+### Line by line: `src/notes_app/application/accounts.py`
+
+```python
+"""Sign-up and sign-in."""
+```
+
+The docstring: sign-up and sign-in.
+
+```python
+from __future__ import annotations
+```
+
+Type hints kept as text.
+
+```python
+from notes_app.application.ports import AuditLog, Clock, LoginThrottle, PasswordHasher, UserRepository
+from notes_app.domain.errors import AuthenticationFailedError, InvalidInputError, LoginThrottledError
+from notes_app.domain.models import AuditAction, AuditEvent, User
+from notes_app.domain.validation import validate_password, validate_username
+```
+
+Imports from the application layer (the ports) and the domain: the errors, the models and the validators for username and password. The service never imports a database or argon2 directly; it receives them as ports.
+
+```python
+class AccountService:
+    """Registers users and checks credentials. Passwords are hashed here and appear nowhere else."""
+```
+
+`AccountService` registers users and checks credentials. The docstring states the rule: passwords are hashed here and appear nowhere else.
+
+```python
+    def __init__(
+        self,
+        users: UserRepository,
+        hasher: PasswordHasher,
+        throttle: LoginThrottle,
+        audit: AuditLog,
+        clock: Clock,
+    ) -> None:
+        self._users = users
+        self._hasher = hasher
+        self._throttle = throttle
+        self._audit = audit
+        self._clock = clock
+```
+
+The constructor receives five collaborators: the user store, the password hasher, the login throttle, the audit log and the clock, and keeps them as private attributes (the underscore marks them private). Handing them in from outside is **dependency injection**; it lets the tests pass fakes.
+
+```python
+    def register(self, username: str, password: str, ip: str) -> User:
+        """Create a user with a salted hash. Raises ``InvalidInputError`` or ``UsernameTakenError``."""
+        canonical = validate_username(username)
+        user = self._users.add(canonical, self._hasher.hash(validate_password(password)))
+        self._audit.record(AuditEvent(AuditAction.SIGNUP, "success", user.id, ip))
+        return user
+```
+
+`register` validates the username (canonical lower-case form) and the password (length), hashes the password with a fresh salt, stores the user and writes a `signup` audit row. The raw password is never stored and not passed on after hashing. A duplicate name makes the repository raise `UsernameTakenError`.
+
+```python
+    def authenticate(self, username: str, password: str, ip: str) -> User:
+        """Return the user for a correct username and password.
+
+        Raises ``LoginThrottledError`` when the client has failed too often, and ``AuthenticationFailedError``
+        for any wrong credential. The two failure causes (unknown user, wrong password) are indistinguishable in
+        the response and in the time taken.
+        """
+```
+
+`authenticate` returns the user for correct credentials. The docstring promises two things: throttled clients are refused, and the two failure causes (no such user, wrong password) look the same in the response and in the time taken.
+
+```python
+        key = f"{ip}|{username.strip().lower()}"
+        now = self._clock.now()
+```
+
+The throttle key joins the client's IP and the cleaned username with a `|`, so a failure limit applies per client and per account. `now` comes from the injected clock.
+
+```python
+        try:
+            self._throttle.check(key, now)
+        except LoginThrottledError:
+            self._audit.record(AuditEvent(AuditAction.LOGIN_THROTTLED, "refused", None, ip))
+            raise
+```
+
+The throttle is asked first. If the client is over the limit, a `login.throttled` audit row is written (with no user id) and the same error is raised again with a bare `raise`, so the web layer answers 429. No password check happens for a throttled client, which also stops an attacker from using the hash cost as a free guessing machine.
+
+```python
+        user = self._find(username)
+```
+
+`_find` looks the user up by name.
+
+```python
+        if user is None or not self._hasher.verify(password, user.password_hash):
+            if user is None:
+                self._hasher.spend_equal_effort(password)
+            self._throttle.record_failure(key, now)
+            self._audit.record(AuditEvent(AuditAction.LOGIN_FAILURE, "failure", user.id if user else None, ip))
+            raise AuthenticationFailedError("invalid username or password")
+```
+
+If the user does not exist or the password does not verify, this is a failure. If there is no such user, `spend_equal_effort` does the same slow hashing work that a real check would have done, so an attacker cannot tell a missing account from a wrong password by timing. The failure is counted against the key, an audit row `login.failure` is written (with the user's id when there is one) and `AuthenticationFailedError` is raised with a message that does not say which part was wrong.
+
+```python
+        self._throttle.reset(key)
+```
+
+Success: the failure count for the key is forgotten.
+
+```python
+        if self._hasher.needs_rehash(user.password_hash):
+            self._users.update_password_hash(user.id, self._hasher.hash(password))
+```
+
+If the stored hash uses weaker parameters than today's, the hash is recomputed with the current ones and stored. This is the only moment the plain password is available, so the upgrade happens at sign-in.
+
+```python
+        self._audit.record(AuditEvent(AuditAction.LOGIN_SUCCESS, "success", user.id, ip))
+        return user
+```
+
+A `login.success` audit row is written and the user returned.
+
+```python
+    def get_user(self, user_id: int) -> User | None:
+        """The user with this id, for the page header of a signed-in session."""
+        return self._users.by_id(user_id)
+```
+
+`get_user` finds a user by id, for the page header of a signed-in session.
+
+```python
+    def _find(self, username: str) -> User | None:
+        try:
+            return self._users.by_username(validate_username(username))
+        except InvalidInputError:
+            return None
+```
+
+`_find` validates the username before the lookup. If validation fails (a name that could never exist, such as one with spaces) the answer is `None`, which flows into the same failure path as an unknown user.
+
+### Line by line: `src/notes_app/application/notes.py`
+
+```python
+"""Notes use cases. Every read, update, delete and share goes through one authorization check."""
+```
+
+The docstring: every read, update, delete and share goes through one authorization check. The lesson's main rule is that a missing check in one route is the classic hole, so there is only one place that decides.
+
+```python
+from __future__ import annotations
+```
+
+Type hints kept as text.
+
+```python
+from notes_app.application.ports import AccessPolicy, AuditLog, NoteRepository, UserRepository
+from notes_app.domain.access import Access
+from notes_app.domain.errors import InvalidInputError, NoteForbiddenError, NoteNotFoundError
+from notes_app.domain.models import AuditAction, AuditEvent, Note, VisibleNote
+from notes_app.domain.validation import validate_note_content, validate_note_title, validate_username
+```
+
+Imports: the ports, the `Access` levels, three errors, the models and three validators.
+
+```python
+class NoteService:
+    """The service layer of the threat model: the boundary where "does this user own or share this note?" is
+    asked on every request, with the answer looked up fresh from the database."""
+```
+
+`NoteService` is the service layer of the threat model: the boundary where "does this user own or share this note?" is asked on every request, with the answer looked up fresh from the database rather than remembered from earlier.
+
+```python
+    def __init__(self, notes: NoteRepository, users: UserRepository, policy: AccessPolicy, audit: AuditLog) -> None:
+        self._notes = notes
+        self._users = users
+        self._policy = policy
+        self._audit = audit
+```
+
+The constructor receives the note store, the user store, the access policy and the audit log.
+
+```python
+    def create(self, user_id: int, title: str, content: str) -> Note:
+        """Create a note owned by the user."""
+        return self._notes.add(user_id, validate_note_title(title), validate_note_content(content))
+```
+
+`create` validates title and content and stores a note owned by the user. Creation needs no authorization check because every signed-in user may create notes for themselves.
+
+```python
+    def get(self, user_id: int, note_id: int, ip: str) -> Note:
+        """Read a note the user owns or has been given."""
+        return self._authorize(user_id, note_id, Access.READ, ip)
+```
+
+`get` requires at least `READ` access. It returns the note if allowed; otherwise `_authorize` raises.
+
+```python
+    def update(self, user_id: int, note_id: int, title: str | None, content: str | None, ip: str) -> Note:
+        """Change a note's title or content; only the owner may."""
+        note = self._authorize(user_id, note_id, Access.WRITE, ip)
+        new_title = validate_note_title(title) if title is not None else note.title
+        new_content = validate_note_content(content) if content is not None else note.content
+        return self._notes.update(note_id, new_title, new_content)
+```
+
+`update` requires `WRITE`. `title` and `content` are optional: `None` means "keep the old value". Each new value is validated before the update is stored. Because the authorization check runs first, a reader never reaches the validators.
+
+```python
+    def delete(self, user_id: int, note_id: int, ip: str) -> None:
+        """Delete a note; only the owner may."""
+        self._authorize(user_id, note_id, Access.WRITE, ip)
+        self._notes.delete(note_id)
+        self._audit.record(AuditEvent(AuditAction.NOTE_DELETED, "success", user_id, ip, (("note_id", str(note_id)),)))
+```
+
+`delete` requires `WRITE`, deletes the note (the repository also removes its shares) and writes a `note.deleted` audit row with the note id as detail.
+
+```python
+    def share(self, user_id: int, note_id: int, username: str, ip: str) -> None:
+        """Share a note with one other user by username; only the owner may."""
+        self._authorize(user_id, note_id, Access.WRITE, ip)
+        target = self._users.by_username(validate_username(username))
+        if target is None or target.id == user_id:
+            raise InvalidInputError("username", "choose another existing user")
+        self._notes.share(note_id, target.id)
+        detail = (("note_id", str(note_id)), ("shared_with", str(target.id)))
+        self._audit.record(AuditEvent(AuditAction.NOTE_SHARED, "success", user_id, ip, detail))
+```
+
+`share` requires `WRITE` (only the owner may share). The target is found by validated username; a missing user, or the owner themself, raises `InvalidInputError`. The share is stored (idempotent) and a `note.shared` audit row records the note id and the target's id.
+
+```python
+    def list_visible(self, user_id: int) -> list[VisibleNote]:
+        """The notes the user owns or has been given."""
+        return self._notes.list_visible(user_id)
+```
+
+`list_visible` asks the repository for the notes the user owns or has been given.
+
+```python
+    def _authorize(self, user_id: int, note_id: int, needed: Access, ip: str) -> Note:
+        note = self._notes.get(note_id)
+        if note is None:
+            raise NoteNotFoundError(f"note {note_id}")
+```
+
+`_authorize` is the one check. It fetches the note; a missing note raises `NoteNotFoundError`.
+
+```python
+        access = self._policy.access(
+            owner_id=note.owner_id, shared_with=self._notes.shared_with(note_id), user_id=user_id
+        )
+```
+
+It asks the policy for the user's access, passing the owner id, the set of shared user ids (read fresh from the database) and the user id.
+
+```python
+        if access >= needed:
+            return note
+```
+
+If the access level is at least what the action needs (`Access` is ordered), the note is returned.
+
+```python
+        reason = "no_access" if access is Access.NONE else "read_only"
+        self._audit.record(
+            AuditEvent(
+                AuditAction.NOTE_ACCESS_DENIED, "refused", user_id, ip, (("note_id", str(note_id)), ("reason", reason))
+            )
+        )
+```
+
+Otherwise the denial is recorded: reason `no_access` when the level is `NONE`, `read_only` when the user is a reader trying to write. An audit row `note.access_denied` is written with the note id and the reason.
+
+```python
+        if access is Access.NONE:
+            raise NoteNotFoundError(f"note {note_id}")
+        raise NoteForbiddenError(f"note {note_id}")
+```
+
+A user with no access gets `NoteNotFoundError` (the same error as a missing note, so a response does not confirm that the id exists). A reader who tried to write gets `NoteForbiddenError`, because that person can already see the note and hiding it would be pointless.
+
+### Line by line: `src/notes_app/application/sessions.py`
+
+```python
+"""Server-side sessions with an opaque cookie value, rotation at sign-in and idle and absolute expiry."""
+```
+
+The docstring: server-side sessions with an opaque cookie value, rotation at sign-in, and idle and absolute expiry. A **session** is how the server remembers a signed-in user between requests: the browser holds a random cookie value, the server holds the record. **Opaque** means the cookie value carries no meaning itself; it is only a key.
+
+```python
+from __future__ import annotations
+```
+
+Type hints kept as text.
+
+```python
+import hashlib
+import hmac
+from dataclasses import dataclass
+from datetime import timedelta
+```
+
+Imports: `hashlib` (hash functions), `hmac` (for a safe comparison), `dataclass` and `timedelta`.
+
+```python
+from notes_app.application.ports import Clock, SessionRepository, TokenGenerator
+from notes_app.domain.models import Session
+```
+
+The ports and the `Session` model.
+
+```python
+TOUCH_INTERVAL = timedelta(seconds=60)
+```
+
+`TOUCH_INTERVAL` is 60 seconds: the stored last-activity time is updated at most once a minute, so the database is not written on every request.
+
+```python
+@dataclass(frozen=True, slots=True)
+class SessionPolicy:
+    """Lifetimes in seconds: how long an idle session lives, how long any session lives, and how long the
+    anonymous session that carries the sign-in form's CSRF token lives."""
+
+    idle_seconds: int
+    absolute_seconds: int
+    anonymous_seconds: int
+```
+
+`SessionPolicy` holds three lifetimes in seconds: how long an idle signed-in session lives, how long any session lives at most, and how long the anonymous session that carries the sign-in form's CSRF token lives.
+
+```python
+@dataclass(frozen=True, slots=True)
+class IssuedSession:
+    """A new session and the raw cookie value, the only moment the raw value exists on the server."""
+
+    raw_token: str
+    session: Session
+    max_age_seconds: int
+```
+
+`IssuedSession` bundles a new session, the raw cookie value and the lifetime. The raw value exists on the server only at this moment; afterwards only its hash is stored.
+
+```python
+def hash_token(raw_token: str) -> str:
+    """The stored form of a cookie value: a database read never yields a usable session."""
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+```
+
+`hash_token` is the stored form of a cookie value: the SHA-256 hash in hexadecimal. A hash cannot be turned back into the value, so even someone who reads the sessions table cannot use the hashes as cookies. The random tokens are long enough (256 bits) that a plain fast hash is safe here, unlike passwords.
+
+```python
+class SessionService:
+    """Creates, resolves, rotates and ends sessions."""
+```
+
+`SessionService` creates, resolves, rotates and ends sessions.
+
+```python
+    def __init__(
+        self, sessions: SessionRepository, tokens: TokenGenerator, clock: Clock, policy: SessionPolicy
+    ) -> None:
+        self._sessions = sessions
+        self._tokens = tokens
+        self._clock = clock
+        self._policy = policy
+```
+
+The constructor receives the session store, the token generator, the clock and the policy.
+
+```python
+    def start_anonymous(self) -> IssuedSession:
+        """A session before sign-in, so the sign-in and sign-up forms carry a CSRF token."""
+        return self._issue(user_id=None, lifetime_seconds=self._policy.anonymous_seconds)
+```
+
+`start_anonymous` issues a session with no user, so the sign-in and sign-up forms have a CSRF token to put in a hidden field.
+
+```python
+    def sign_in(self, previous_raw_token: str | None, user_id: int) -> IssuedSession:
+        """Replace any earlier session with a new one for the user (defeats session fixation)."""
+        if previous_raw_token:
+            self._sessions.delete(hash_token(previous_raw_token))
+        self._sessions.purge_expired(self._clock.now())
+        return self._issue(user_id=user_id, lifetime_seconds=self._policy.absolute_seconds)
+```
+
+`sign_in` deletes the earlier session (the cookie the browser had before signing in) if there was one, deletes expired sessions from the store, and issues a brand new session for the user with a new token. Issuing a new token at sign-in **defeats session fixation**: an attacker who planted a known session value in the victim's browser before sign-in finds it dead afterwards.
+
+```python
+    def resolve(self, raw_token: str | None) -> Session | None:
+        """The live session for a cookie value, or ``None`` when unknown, idle too long or past its expiry."""
+        if not raw_token:
+            return None
+```
+
+`resolve` takes the raw cookie value and returns the live session or `None`. No value means no session.
+
+```python
+        token_hash = hash_token(raw_token)
+        session = self._sessions.get(token_hash)
+        if session is None:
+            return None
+```
+
+The value is hashed and the session fetched; an unknown hash gives `None`.
+
+```python
+        now = self._clock.now()
+        idle_limit = session.last_seen_at + timedelta(seconds=self._policy.idle_seconds)
+        if now >= session.expires_at or (session.user_id is not None and now >= idle_limit):
+            self._sessions.delete(token_hash)
+            return None
+```
+
+The idle limit is the last activity plus the idle time. A session is dead if the current time has passed its absolute expiry, or if it belongs to a signed-in user and has been idle too long. Anonymous sessions have no idle rule, only the short absolute one. A dead session is deleted from the store.
+
+```python
+        if now - session.last_seen_at >= TOUCH_INTERVAL:
+            self._sessions.touch(token_hash, now)
+        return session
+```
+
+A live session whose last activity is a minute or more old gets its activity time refreshed. The session is returned.
+
+```python
+    def sign_out(self, raw_token: str | None) -> None:
+        """Delete the session on the server; the cookie value stops meaning anything."""
+        if raw_token:
+            self._sessions.delete(hash_token(raw_token))
+```
+
+`sign_out` deletes the session on the server. The browser may keep the cookie, but it no longer means anything.
+
+```python
+    @staticmethod
+    def csrf_valid(session: Session, supplied: str | None) -> bool:
+        """Constant-time comparison of the supplied token with the session's."""
+        return supplied is not None and hmac.compare_digest(session.csrf_token.encode(), supplied.encode())
+```
+
+`csrf_valid` is a static method (it needs no object) that compares the supplied token with the session's using `hmac.compare_digest`, which takes the same time no matter where the first difference is, so response timing leaks nothing about the token. A missing token is invalid.
+
+```python
+    def _issue(self, *, user_id: int | None, lifetime_seconds: int) -> IssuedSession:
+        now = self._clock.now()
+        raw_token = self._tokens.new_token()
+        session = Session(
+            token_hash=hash_token(raw_token),
+            user_id=user_id,
+            csrf_token=self._tokens.new_token(),
+            created_at=now,
+            last_seen_at=now,
+            expires_at=now + timedelta(seconds=lifetime_seconds),
+        )
+        self._sessions.add(session)
+        return IssuedSession(raw_token, session, lifetime_seconds)
+```
+
+`_issue` creates the session: the current time, a fresh raw token for the cookie and another fresh token for CSRF, a record that stores only the hash of the cookie value, the creation and last-seen times set to now and the expiry set to now plus the lifetime. It stores the record and returns it with the raw token and lifetime.
+
+### Line by line: `src/notes_app/infrastructure/clock.py`
+
+```python
+"""System clock and token source."""
+
+from __future__ import annotations
+```
+
+The docstring and the type-hint line.
+
+```python
+import secrets
+from datetime import UTC, datetime
+```
+
+`secrets` is the standard module for security-grade randomness; `datetime` with `UTC` gives time-zone-aware times.
+
+```python
+class SystemClock:
+    """The real time, in UTC."""
+
+    def now(self) -> datetime:
+        """The current UTC time."""
+        return datetime.now(UTC)
+```
+
+`SystemClock` implements the `Clock` port: `now()` returns the current UTC time.
+
+```python
+class SecretsTokenGenerator:
+    """Tokens from the operating system's CSPRNG: 32 bytes, 256 bits."""
+
+    def new_token(self) -> str:
+        """A URL-safe token."""
+        return secrets.token_urlsafe(32)
+```
+
+`SecretsTokenGenerator` implements `TokenGenerator`: `secrets.token_urlsafe(32)` returns 32 random bytes (256 bits) from the operating system's cryptographic random source, written in URL-safe text.
+
+### Line by line: `src/notes_app/infrastructure/logging.py`
+
+```python
+"""Structured (JSON) logging with redaction, so a secret that reaches a log call never reaches the log."""
+```
+
+The docstring: structured JSON logging with redaction, so a secret that reaches a log call never reaches the log.
+
+```python
+from __future__ import annotations
+
+import json
+import logging
+import re
+import sys
+from datetime import UTC, datetime
+from typing import Any
+```
+
+Imports: `json`, `logging`, `re`, `sys`, `datetime` with `UTC`, and `Any`.
+
+```python
+REDACTED = "[redacted]"
+_SENSITIVE_KEY = re.compile(r"pass(word|wd)?|secret|token|cookie|authorization|csrf|session|api[_-]?key", re.IGNORECASE)
+```
+
+`REDACTED` is the replacement text. `_SENSITIVE_KEY` is a case-insensitive regular expression matching names that suggest a secret: `pass`, `password`, `passwd`, `secret`, `token`, `cookie`, `authorization`, `csrf`, `session`, `api_key` (also `api-key`, `apikey`).
+
+```python
+_RESERVED = set(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {"message", "asctime"}
+```
+
+`_RESERVED` is the set of attribute names every standard `LogRecord` already has plus `message` and `asctime`; anything else on a record was added by the caller through `extra=`.
+
+```python
+def redact(fields: dict[str, Any]) -> dict[str, Any]:
+    """Replace the value of every field whose name looks sensitive."""
+    return {key: REDACTED if _SENSITIVE_KEY.search(key) else value for key, value in fields.items()}
+```
+
+`redact` returns a new dictionary where each value whose key matches the pattern is replaced.
+
+```python
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line: time, level, logger, message, and the call's extra fields, redacted."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Render a record as a single JSON line."""
+        payload: dict[str, Any] = {
+            "time": datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        payload.update(redact({key: value for key, value in record.__dict__.items() if key not in _RESERVED}))
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, default=str, separators=(",", ":"))
+```
+
+`JsonFormatter.format` builds a dictionary with the record's time (ISO 8601, milliseconds), level, logger name and message, adds the caller's extra fields after redaction, adds the stack trace under `exception` if there is one, and returns compact JSON (`default=str` turns anything unserializable into text).
+
+```python
+def configure_logging(level: str) -> None:
+    """Send every log record to standard error as JSON at the given level."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(JsonFormatter())
+    root = logging.getLogger()
+    root.handlers[:] = [handler]
+    root.setLevel(level)
+```
+
+`configure_logging` makes a handler that writes to standard error with that formatter, makes it the only handler of the root logger and sets the level.
+
+### Line by line: `src/notes_app/infrastructure/weaknesses/concatenated_notes.py`
+
+```python
+"""WEAKNESS (UNSAFE_SQL_CONCATENATION): a note insert that splices its values into the statement text."""
+```
+
+The docstring: a deliberate weakness, a note insert that splices its values into the statement text.
+
+```python
+from __future__ import annotations
+
+from notes_app.domain.models import Note
+from notes_app.infrastructure.postgres.notes import PostgresNoteRepository, to_note
+```
+
+Imports of `Note` and of the real PostgreSQL repository, which this class extends.
+
+```python
+class ConcatenatedNoteRepository(PostgresNoteRepository):
+    """What the parameterized-query control replaces. A quote character in a title or in the content now changes
+    the statement's structure, so a note containing one is a syntax error instead of text."""
+```
+
+`ConcatenatedNoteRepository` inherits everything and replaces only `add`. A quote character in a title or content now changes the structure of the statement, so such a note becomes a syntax error instead of text.
+
+```python
+    def add(self, owner_id: int, title: str, content: str) -> Note:
+        """Insert by building the statement as a string."""
+        statement = (
+            "INSERT INTO notes (owner_id, title, content) VALUES ("  # noqa: S608 - deliberate weakness, APP_ENV=test only
+            + str(owner_id)
+            + ", '"
+            + title
+            + "', '"
+            + content
+            + "') RETURNING id, owner_id, title, content, created_at, updated_at"
+        )
+```
+
+`add` builds the statement with `+`, pasting the owner id, the title and the content into the SQL text. The `noqa: S608` comment tells ruff the string-built SQL is intentional.
+
+```python
+        with self._database.connection() as connection:
+            row = connection.execute(statement).fetchone()
+        assert row is not None  # noqa: S101
+        return to_note(row)
+```
+
+It runs the statement and builds a `Note` from the returned row.
+
+### Line by line: `src/notes_app/infrastructure/weaknesses/open_policy.py`
+
+```python
+"""WEAKNESS (UNSAFE_SKIP_OWNERSHIP_CHECK): an access policy that trusts any id."""
+```
+
+The docstring: a deliberate weakness, an access policy that trusts any id.
+
+```python
+from __future__ import annotations
+
+from collections.abc import Collection
+
+from notes_app.domain.access import Access
+```
+
+Imports of `Collection` and `Access`.
+
+```python
+class AllowEverythingPolicy:
+    """What the per-request authorization check replaces: if you know the id, you may do anything with it."""
+
+    def access(self, *, owner_id: int, shared_with: Collection[int], user_id: int) -> Access:
+        """Full access for everyone."""
+        return Access.WRITE
+```
+
+`AllowEverythingPolicy.access` ignores its arguments and returns `WRITE` for everyone. With it, anyone who knows a note id may do anything, which is exactly what the authorization tests must catch.
+
+### Line by line: `src/notes_app/infrastructure/weaknesses/unsalted_sha256_hasher.py`
+
+```python
+"""WEAKNESS (UNSAFE_WEAK_PASSWORD_HASH): an unsalted fast digest instead of a password hash."""
+```
+
+The docstring: a deliberate weakness, an unsalted fast digest instead of a password hash.
+
+```python
+from __future__ import annotations
+
+import hashlib
+import hmac
+```
+
+Imports of `hashlib` and `hmac`.
+
+```python
+class UnsaltedSha256Hasher:
+    """What the argon2 control replaces: fast, no salt, identical passwords give identical hashes."""
+
+    def hash(self, password: str) -> str:
+        """A bare SHA-256 digest."""
+        return hashlib.sha256(password.encode()).hexdigest()
+```
+
+`hash` returns a bare SHA-256 hexadecimal digest: fast, no salt, so equal passwords give equal hashes and a leaked table can be attacked quickly.
+
+```python
+    def verify(self, password: str, encoded: str) -> bool:
+        """Compare digests."""
+        return hmac.compare_digest(self.hash(password), encoded)
+```
+
+`verify` compares digests with `hmac.compare_digest`.
+
+```python
+    def needs_rehash(self, encoded: str) -> bool:
+        """Never; there are no parameters."""
+        return False
+```
+
+`needs_rehash` is always false because there are no parameters.
+
+```python
+    def spend_equal_effort(self, password: str) -> None:
+        """Nothing to equalize."""
+```
+
+`spend_equal_effort` does nothing; there is no cost to equalize.
+
 ## Try it yourself
 
 Run these from the repository root after `make install`.

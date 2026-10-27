@@ -94,6 +94,77 @@ SHA-256 is a fine fingerprint but a poor password hash: it is fast and has no sa
 
 `domain/validation.py` accepts 12 to 128 characters and no other rule (length is what matters, following NIST SP 800-63B). The upper bound exists because hashing time grows with input, so an unbounded password would be a denial-of-service lever.
 
+### Line by line: `src/notes_app/infrastructure/argon2_hasher.py`
+
+```python
+"""Password hashing with argon2id: slow, memory-hard, random salt per hash, parameters inside the encoded value."""
+```
+
+The docstring: password hashing with argon2id, which is slow, memory-hard, uses a random salt per hash and stores its parameters inside the encoded value.
+
+```python
+from __future__ import annotations
+
+from argon2 import PasswordHasher as Argon2
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+```
+
+Type hints kept as text; `PasswordHasher` from the `argon2` package is imported under the name `Argon2` to avoid clashing with the application's own port of the same name, together with three error classes.
+
+```python
+class Argon2PasswordHasher:
+    """The production ``PasswordHasher``."""
+```
+
+`Argon2PasswordHasher` is the production implementation of the `PasswordHasher` port.
+
+```python
+    def __init__(self, *, time_cost: int, memory_kib: int, parallelism: int) -> None:
+        self._argon2 = Argon2(time_cost=time_cost, memory_cost=memory_kib, parallelism=parallelism)
+        # A real hash of a throwaway value, so verifying a missing user costs what verifying a real one does.
+        self._dummy_hash = self._argon2.hash("dummy-value-for-timing-equalization")
+```
+
+The constructor takes keyword-only `time_cost` (iterations), `memory_kib` (memory in kibibytes) and `parallelism` (lanes), builds the argon2 hasher, and hashes a throwaway value once. That dummy hash is what makes the timing of a missing user equal to the timing of a real one.
+
+```python
+    def hash(self, password: str) -> str:
+        """An encoded argon2id hash with a fresh random salt."""
+        return self._argon2.hash(password)
+```
+
+`hash` returns an encoded argon2id hash with a fresh random salt each time.
+
+```python
+    def verify(self, password: str, encoded: str) -> bool:
+        """True only for the matching password; a malformed stored value verifies as False."""
+        try:
+            return self._argon2.verify(encoded, password)
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+```
+
+`verify` returns true only for the matching password. A mismatch, a verification error or a malformed stored value all give false instead of raising.
+
+```python
+    def needs_rehash(self, encoded: str) -> bool:
+        """True when the stored hash was made with weaker parameters than the current ones."""
+        try:
+            return self._argon2.check_needs_rehash(encoded)
+        except InvalidHashError:
+            return True
+```
+
+`needs_rehash` asks argon2 whether the stored hash was made with weaker parameters than the current ones; an unreadable hash counts as needing a rehash.
+
+```python
+    def spend_equal_effort(self, password: str) -> None:
+        """Verify against a dummy hash and discard the result."""
+        self.verify(password, self._dummy_hash)
+```
+
+`spend_equal_effort` verifies the password against the dummy hash and discards the result.
+
 ## Try it yourself
 
 1. Make a hash and read it:
