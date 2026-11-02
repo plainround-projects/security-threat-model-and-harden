@@ -102,6 +102,113 @@ SECURITY_HEADERS = {
 
 `SessionService` (`application/sessions.py`) implements: `start_anonymous`, `sign_in` (deletes the previous session, purges expired ones, issues a new one), `resolve` (unknown, expired, or idle for 30 minutes means `None`; touches `last_seen_at` at most once a minute), `sign_out` (deletes the server-side row, so a copied cookie is dead). Sign-out is a real server-side delete, not just a cookie clear.
 
+### Line by line: `src/notes_app/interfaces/http/security.py`
+
+```python
+"""Browser-facing defenses: response headers, the session cookie's attributes and the CSRF rule."""
+```
+
+The docstring: the browser-facing defenses, meaning the response headers, the session cookie's attributes and the CSRF rule.
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from flask import Response
+```
+
+Type hints kept as text; `dataclass`; and Flask's `Response` class.
+
+```python
+SESSION_COOKIE = "__Host-session"
+CSRF_HEADER = "X-CSRF-Token"
+CSRF_FIELD = "csrf_token"
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+```
+
+Four constants. `SESSION_COOKIE` is `__Host-session`: the `__Host-` prefix is a browser rule that accepts such a cookie only if it is marked `Secure`, has `Path=/` and has no `Domain`, so a sibling sub-domain cannot overwrite it. `CSRF_HEADER` and `CSRF_FIELD` are where the CSRF token may arrive (a request header, or a hidden form field). `UNSAFE_METHODS` are the HTTP methods that change state, which need the CSRF token (`frozenset` is a set that cannot change).
+
+```python
+# A page that runs no script and loads only its own stylesheet; it cannot be framed, cannot change its base URL
+# and can post forms only to itself. A stored-XSS bug would still find nothing to run.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+)
+```
+
+The comment explains the content security policy (CSP) in plain words, and the constant spells it out. `default-src 'none'` allows nothing by default (no script, no fonts, no frames); `style-src 'self'` and `img-src 'self'` allow stylesheets and images from the site itself only; `form-action 'self'` lets forms post only back to this site; `frame-ancestors 'none'` forbids showing the page inside a frame; `base-uri 'none'` forbids changing the base address of relative links. Because no script is allowed, even a stored cross-site-scripting bug would find nothing to run.
+
+```python
+SECURITY_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+}
+```
+
+`SECURITY_HEADERS` lists eight headers: the CSP; `X-Content-Type-Options: nosniff` (the browser must not guess a different content type); `X-Frame-Options: DENY` (the older framing ban, for old browsers); `Referrer-Policy: no-referrer` (do not send the previous page's address); `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Resource-Policy: same-origin` (isolate the page from other sites' windows and from other sites loading its files); `Permissions-Policy` turning off camera, microphone and geolocation; and `Strict-Transport-Security` with `max-age=63072000` (two years in seconds) and `includeSubDomains`, which tells the browser to use HTTPS only for this site.
+
+```python
+def apply_security_headers(response: Response) -> Response:
+    """Add the security headers to every response; a handler's own value wins."""
+    for name, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    return response
+```
+
+`apply_security_headers` adds each header to a response unless a handler already set that header (`setdefault`).
+
+```python
+@dataclass(frozen=True, slots=True)
+class CookieAttributes:
+    """The attributes of the session cookie."""
+
+    http_only: bool
+    secure: bool
+    same_site: str | None
+```
+
+`CookieAttributes` holds three choices for the cookie: `http_only` (JavaScript cannot read it), `secure` (sent only over HTTPS) and `same_site` (when the browser sends it with cross-site requests).
+
+```python
+HARDENED_COOKIE = CookieAttributes(http_only=True, secure=True, same_site="Lax")
+WEAK_COOKIE = CookieAttributes(http_only=False, secure=False, same_site=None)  # UNSAFE_WEAK_SESSION_COOKIE
+```
+
+`HARDENED_COOKIE` turns on HttpOnly and Secure with `SameSite=Lax` (not sent on cross-site POSTs). `WEAK_COOKIE` turns them all off and exists only for the deliberate weakness `UNSAFE_WEAK_SESSION_COOKIE`.
+
+```python
+def set_session_cookie(response: Response, raw_token: str, max_age: int, attributes: CookieAttributes) -> None:
+    """Attach the opaque session id. The ``__Host-`` prefix makes browsers insist on Secure, Path=/ and no Domain."""
+    response.set_cookie(
+        SESSION_COOKIE,
+        raw_token,
+        max_age=max_age,
+        httponly=attributes.http_only,
+        secure=attributes.secure,
+        samesite=attributes.same_site,
+        path="/",
+    )
+```
+
+`set_session_cookie` attaches the opaque session id with `max_age` seconds of life, the chosen attributes and `path="/"`.
+
+```python
+def clear_session_cookie(response: Response, attributes: CookieAttributes) -> None:
+    """Expire the cookie in the browser."""
+    response.delete_cookie(
+        SESSION_COOKIE, httponly=attributes.http_only, secure=attributes.secure, samesite=attributes.same_site, path="/"
+    )
+```
+
+`clear_session_cookie` expires the cookie in the browser with the same attributes (a cookie is removed only by a response that names the same name, path and attributes).
+
 ## Try it yourself
 
 1. Run the header tests (no database):

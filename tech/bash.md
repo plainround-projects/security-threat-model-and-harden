@@ -131,6 +131,93 @@ test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES
 ```
 In `docker-compose.yml`. `CMD-SHELL` means "run this string through `/bin/sh`". `$$` stops Compose from replacing the variable itself, so the shell inside the container expands it.
 
+### Line by line: `scripts/demo.sh`
+
+```bash
+#!/usr/bin/env bash
+# Start the server for the run, wait until it is ready, run the lesson's scenario, shut the server down with
+# SIGTERM and show that it exited cleanly. Needs `make up` first. Called by `make demo`.
+```
+
+The first line, `#!/usr/bin/env bash`, tells the system to run the file with bash. The comments say what it does: start the server, wait until it is ready, run the scenario, stop the server with SIGTERM and show that it exited cleanly.
+
+```bash
+set -euo pipefail
+```
+
+`set -euo pipefail`: stop at the first failing command (`-e`), treat unset variables as errors (`-u`) and make a pipeline fail if any part fails (`-o pipefail`).
+
+```bash
+PY=.venv/bin/python
+LOG=$(mktemp)
+```
+
+`PY` is the virtual environment's Python. `LOG` is a new temporary file name from `mktemp`.
+
+```bash
+.venv/bin/gunicorn -c python:notes_app.interfaces.gunicorn_conf "notes_app.interfaces.wsgi:build_app()" 2>"$LOG" &
+SERVER=$!
+```
+
+Gunicorn starts in the **background** (the final `&` returns control at once) with its error output (file descriptor 2) redirected into the log file (`2>"$LOG"`). `$!` is the process id of the last background command, saved as `SERVER`.
+
+```bash
+trap 'kill -TERM "$SERVER" 2>/dev/null || true' EXIT
+```
+
+`trap '...' EXIT` registers a command to run whenever the script exits for any reason: it sends SIGTERM to the server, and `|| true` ignores an error if it is already gone.
+
+```bash
+for _ in $(seq 1 40); do
+  if .venv/bin/notes-app-health >/dev/null 2>&1; then break; fi
+  sleep 0.5
+done
+```
+
+The loop tries up to 40 times (`seq 1 40`) to run the health program with output thrown away (`>/dev/null 2>&1`); on success `break` leaves the loop, otherwise it sleeps half a second.
+
+```bash
+.venv/bin/notes-app-health
+```
+
+One final call of the health program: if the server never became ready, it fails and `set -e` ends the script.
+
+```bash
+status=0
+$PY -m notes_app.interfaces.demo_cli || status=$?
+```
+
+`status=0`, then the scenario runs; `|| status=$?` stores a failing exit code instead of stopping the script, so the shutdown part still runs.
+
+```bash
+echo "--- audit lines the server logged (ids and reasons only) ---"
+grep '"message":"audit"' "$LOG" | cut -c1-230 | tail -n 8 || true
+```
+
+It prints a heading and the last eight audit lines from the server log: `grep` selects lines with `"message":"audit"`, `cut -c1-230` shortens each to 230 characters, `tail -n 8` keeps the last eight.
+
+```bash
+kill -TERM "$SERVER"
+wait "$SERVER" || true
+trap - EXIT
+```
+
+SIGTERM is sent, `wait` waits for the server to finish, and `trap - EXIT` removes the exit trap since cleanup is done.
+
+```bash
+echo "--- shutdown ---"
+grep -E 'Handling signal|database pool closed|Shutting down' "$LOG" | cut -c1-160
+```
+
+It prints a heading and the log lines that show a clean shutdown (signal handled, pool closed, shutting down).
+
+```bash
+rm -f "$LOG"
+exit "$status"
+```
+
+The log file is removed and the script exits with the scenario's status.
+
 ## Try it yourself
 
 1. Watch the safety switches work:

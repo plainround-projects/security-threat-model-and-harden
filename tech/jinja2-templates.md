@@ -98,6 +98,248 @@ The share form is shown only to the owner. That is for convenience only; the ser
 
 `login.html` and `signup.html` each extend the frame and fill the title and content blocks. `login.html` shows `{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}` (`role="alert"` makes screen readers announce the message), then a form: `method="post" action="/login"`, a hidden input `csrf_token` whose value is `{{ csrf_token }}`, a text field `username` (`autocomplete="username"`, `required`, `maxlength="32"`), a password field (`type="password"`, `autocomplete="current-password"`, `maxlength="128"`), a submit button, and a link to `/signup`. `signup.html` is the same with `minlength` attributes (3 for the name, 12 for the password) and `autocomplete="new-password"` so password managers offer to generate one. `error.html` extends the frame, prints `{{ title }}` as the heading, the message if there is one, and a link home. `notes.html` loops over the notes (empty list: "No notes yet.") and has a creation form with `title` (`maxlength="120"`) and a `textarea` for `content` (`rows="6"`, `maxlength="10000"`). The form attributes only help honest users and password managers; the server validates every value again.
 
+### Line by line: `src/notes_app/interfaces/http/templates/base.html`
+
+A **template** is an HTML file with holes. Jinja2 fills the holes with values and sends the finished HTML to the browser. Text in `{{ ... }}` is replaced by a value; text in `{% ... %}` is an instruction (`if`, `for`, `block`). Flask's template engine **encodes** every `{{ value }}` for HTML (for example `<` becomes `&lt;`), so text typed by a user shows as text and cannot run as script. `base.html` is the page frame that every other page extends.
+
+```html
+<!doctype html>
+<html lang="en">
+```
+
+`<!doctype html>` tells the browser this is modern HTML; `<html lang="en">` declares the page language.
+
+```html
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+```
+
+The `<head>` holds information about the page. `<meta charset="utf-8">` sets the text encoding; the `viewport` meta makes the page fit phone screens.
+
+```html
+  <title>{% block title %}Notes{% endblock %}</title>
+```
+
+`<title>` is the text on the browser tab. `{% block title %}Notes{% endblock %}` defines a **block**: a named hole that child templates can replace. The text inside is the default.
+
+```html
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+```
+
+`<link rel="stylesheet" href="/static/style.css">` loads the stylesheet from the site itself, which the content security policy allows (`style-src 'self'`). There is no script tag anywhere.
+
+```html
+<body>
+  <header>
+    <a class="brand" href="/">Notes</a>
+```
+
+`<body>` is what is shown. The `<header>` holds a link `class="brand"` to the home page.
+
+```html
+    {% if current_user %}
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <span>Signed in as {{ current_user.username }}</span>
+      <button type="submit">Sign out</button>
+    </form>
+    {% endif %}
+```
+
+`{% if current_user %}` shows a sign-out form only for a signed-in user. The form posts to `/logout`. The hidden input `csrf_token` carries the session's CSRF token (`{{ csrf_token }}`) so the server accepts the post. The form shows the username and a submit button.
+
+```html
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
+```
+
+The `<main>` area holds `{% block content %}{% endblock %}`, the hole each page fills. The tags are then closed.
+
+### Line by line: `src/notes_app/interfaces/http/templates/error.html`
+
+```html
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+```
+
+`{% extends "base.html" %}` says this page is the base page with some blocks replaced. The title block is set to the error's title, and the content block starts.
+
+```html
+<h1>{{ title }}</h1>
+{% if message %}<p>{{ message }}</p>{% endif %}
+<p><a href="/">Home</a></p>
+{% endblock %}
+```
+
+A heading with the title, a paragraph with the message only `{% if message %}`, and a link home. `{% endblock %}` closes the content block.
+
+### Line by line: `src/notes_app/interfaces/http/templates/login.html`
+
+```html
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<h1>Sign in</h1>
+```
+
+Extends the base; the tab title is "Sign in" and the page heading is "Sign in".
+
+```html
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+```
+
+If the route passed an `error`, a paragraph shows it. `class="error"` styles it and `role="alert"` makes screen readers announce it.
+
+```html
+<form method="post" action="/login">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+```
+
+A form that posts to `/login`, with the hidden CSRF token.
+
+```html
+  <label>Username <input name="username" autocomplete="username" required maxlength="32"></label>
+  <label>Password <input name="password" type="password" autocomplete="current-password" required maxlength="128"></label>
+```
+
+Two labelled fields. `autocomplete="username"` and `"current-password"` let password managers fill them; `required` stops an empty submit; `maxlength` limits the length in the browser (32 and 128, matching the server's rules, which are the real check). The password field has `type="password"`, which hides what is typed.
+
+```html
+  <button type="submit">Sign in</button>
+</form>
+<p>New here? <a href="/signup">Create an account</a>.</p>
+{% endblock %}
+```
+
+The submit button and a link to the sign-up page; the block ends.
+
+### Line by line: `src/notes_app/interfaces/http/templates/note.html`
+
+```html
+{% extends "base.html" %}
+{% block title %}{{ note.title }}{% endblock %}
+{% block content %}
+<h1>{{ note.title }}</h1>
+```
+
+Extends the base; the tab title and the heading are the note's title. Because of the automatic encoding, a title like `<b>x</b>` is shown as text.
+
+```html
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+```
+
+The optional error paragraph.
+
+```html
+<pre class="note-content">{{ note.content }}</pre>
+```
+
+`<pre class="note-content">` shows the content with its line breaks kept. `{{ note.content }}` is encoded, so hostile markup in a note is inert.
+
+```html
+{% if current_user and current_user.id == note.owner_id %}
+<form method="post" action="/notes/{{ note.id }}/shares">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Share with (username) <input name="username" required maxlength="32"></label>
+  <button type="submit">Share</button>
+</form>
+{% endif %}
+```
+
+Only for the owner (`current_user.id == note.owner_id`), a form posts to `/notes/<id>/shares` with the CSRF token and a field for the username to share with.
+
+```html
+<p><a href="/notes">Back to your notes</a></p>
+{% endblock %}
+```
+
+A link back to the list, and the end of the block.
+
+### Line by line: `src/notes_app/interfaces/http/templates/notes.html`
+
+```html
+{% extends "base.html" %}
+{% block title %}Your notes{% endblock %}
+{% block content %}
+<h1>Your notes</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+```
+
+Extends the base, with title and heading "Your notes" and the optional error paragraph.
+
+```html
+<ul class="notes">
+  {% for item in notes %}
+  <li><a href="/notes/{{ item.note.id }}">{{ item.note.title }}</a>
+    <small>{% if item.role.value == "owner" %}yours{% else %}shared by {{ item.owner_username }}{% endif %}</small></li>
+  {% else %}
+  <li>No notes yet.</li>
+  {% endfor %}
+</ul>
+```
+
+A list. `{% for item in notes %}` repeats the `<li>` for each visible note: a link to `/notes/<id>` with the encoded title, and a small label: "yours" if the role is `owner`, else "shared by" and the owner's username. `{% else %}` after a `for` runs only when the list is empty and shows "No notes yet."
+
+```html
+<h2>New note</h2>
+<form method="post" action="/notes">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label>Title <input name="title" required maxlength="120"></label>
+  <label>Content <textarea name="content" rows="6" maxlength="10000"></textarea></label>
+  <button type="submit">Save note</button>
+</form>
+```
+
+The "New note" form posts to `/notes` with the CSRF token, a required title (at most 120 characters) and a content text area of six rows (at most 10,000 characters).
+
+```html
+{% endblock %}
+```
+
+The block ends.
+
+### Line by line: `src/notes_app/interfaces/http/templates/signup.html`
+
+```html
+{% extends "base.html" %}
+{% block title %}Create an account{% endblock %}
+{% block content %}
+<h1>Create an account</h1>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+```
+
+Extends the base, with the heading "Create an account" and the optional error paragraph.
+
+```html
+<form method="post" action="/signup">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+```
+
+A form that posts to `/signup`, with the CSRF token.
+
+```html
+  <label>Username <input name="username" autocomplete="username" required minlength="3" maxlength="32"></label>
+  <label>Password (12 to 128 characters) <input name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="128"></label>
+```
+
+Username (3 to 32 characters, `autocomplete="username"`) and password (12 to 128 characters, `autocomplete="new-password"`, which tells password managers to offer a new password).
+
+```html
+  <button type="submit">Create account</button>
+</form>
+<p>Already registered? <a href="/login">Sign in</a>.</p>
+{% endblock %}
+```
+
+The submit button, a link to sign-in, and the end of the block.
+
 ## Try it yourself
 
 1. See escaping directly:

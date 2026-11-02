@@ -146,6 +146,254 @@ The first line of the Makefile is only a comment (every line starting with `#`).
 2. If that file does not exist, or `requirements-dev.lock` or `pyproject.toml` is newer than it, make runs the stamp rule's recipe: `$(PYTHON) -m venv $(VENV)` creates a **virtual environment** (a private folder holding its own copy of the Python tools and its own installed packages, so this project's packages never collide with another project's); `pip install -q --require-hashes -r requirements-dev.lock` installs every locked package, refusing any file whose fingerprint is not in the lock (`tech/uv-and-lock-files.md`); `pip install -q --no-deps -e .` installs this project itself in "editable" mode (a link to `src/`, so edits take effect immediately); `touch $@` creates or updates the stamp file.
 3. If the file exists and is newer than both prerequisites, nothing is reinstalled.
 
+### Line by line: `Makefile`
+
+Read the file as a list of **rules**: a line `target: prerequisites` followed by indented **recipe** lines (shell commands). Each recipe line starts with a tab character and runs in its own `/bin/sh`. The `##` text after a target is a comment that `make help` prints.
+
+```make
+# make up | run | demo | test | test-security | prove | lint | audit | sbom | down      (make help lists everything)
+```
+
+A comment listing the main targets.
+
+```make
+PYTHON ?= $(shell command -v python3.13 || command -v python3.12 || command -v python3)
+```
+
+`PYTHON ?= ...` sets the variable only if it is not already set. `$(shell ...)` runs a command and uses its output; `command -v` prints the path of a program if it exists, and `||` tries the next one if not. So Python 3.13 is used if present, else 3.12, else any `python3`.
+
+```make
+VENV := .venv
+PY := $(VENV)/bin/python
+STAMP := $(VENV)/.installed
+```
+
+`:=` assigns once, at this line. `VENV` is the folder of the **virtual environment** (a private folder with its own Python and its own installed packages). `PY` is the Python inside it. `STAMP` is an empty marker file that records that the install is done.
+
+```make
+POSTGRES_USER ?= notes_owner
+POSTGRES_DB ?= notes
+PSQL := docker compose exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 -q
+```
+
+`POSTGRES_USER` and `POSTGRES_DB` default to `notes_owner` and `notes`. `PSQL` is a command prefix: run `psql` inside the `postgres` container through `docker compose exec -T` (`-T` turns off the pseudo-terminal, needed when input is piped in) as the owner, with `-v ON_ERROR_STOP=1` (stop and exit non-zero at the first SQL error) and `-q` (quiet).
+
+```make
+SERVE := $(VENV)/bin/gunicorn -c python:notes_app.interfaces.gunicorn_conf "notes_app.interfaces.wsgi:build_app()"
+```
+
+`SERVE` is the gunicorn command line, used by the `run` target.
+
+```make
+-include .env
+export
+```
+
+`-include .env` reads `.env` as more make variables if it exists (the `-` means no error if it is missing). A bare `export` then passes every make variable to the recipes as environment variables.
+
+```make
+.PHONY: help install env up db seed migrate queries reset-db run demo health lint format test test-security \
+        test-integration test-e2e test-all prove audit sbom check docker-build docker-run down clean
+```
+
+`.PHONY` lists targets that are names, not files; without it a file called `test` would make `make test` do nothing.
+
+```make
+help: ## list the targets
+	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed -E 's/:.*## /\t/' | sort
+```
+
+`help` runs `grep` to pick the lines that look like `name: ... ## text` from all makefiles (`-h` hides file names, `-E` enables extended patterns), `sed` to turn `: ... ## ` into a tab, and `sort`. `@` hides the command itself.
+
+```make
+$(STAMP): requirements-dev.lock pyproject.toml
+	$(PYTHON) -m venv $(VENV)
+	$(VENV)/bin/pip install -q --require-hashes -r requirements-dev.lock
+	$(VENV)/bin/pip install -q --no-deps -e .
+	touch $@
+```
+
+The stamp rule depends on the lock file and `pyproject.toml`; it reruns when either is newer. It creates the virtual environment, installs the development lock with `--require-hashes` (pip refuses any package whose hash is not listed), installs the project itself with `--no-deps -e .` (an **editable** install that uses the code in `src/` directly) and `touch $@` creates the stamp (`$@` is the target's name).
+
+```make
+install: $(STAMP) ## create .venv from the lock file
+```
+
+`install` depends on the stamp.
+
+```make
+env:
+	@[ -f .env ] || { cp .env.example .env; echo "created .env from .env.example"; }
+```
+
+`env` copies `.env.example` to `.env` if `.env` does not exist.
+
+```make
+# Start PostgreSQL and, on a fresh container, run the DDL, the seed and the migrations (see the sql/ folder).
+up: env $(STAMP) ## start PostgreSQL and create the schema, seed and audit table
+	docker compose up -d --wait postgres
+	@if [ "$$($(PSQL) -tAc "SELECT to_regclass('public.users') IS NOT NULL")" = "t" ]; then \
+	  echo "schema already present"; else $(MAKE) --no-print-directory db; fi
+```
+
+`up` needs `env` and the stamp. `docker compose up -d --wait postgres` starts the database in the background and waits for its health check. The `if` asks the database whether the table `users` exists (`to_regclass` is null if not; `-tAc` prints only the bare value, `t` for true). `$$` passes one `$` to the shell. If the schema is present it says so; otherwise `$(MAKE) --no-print-directory db` runs the `db` target.
+
+```make
+db: ## run sql/001_schema.sql, 002_seed.sql and sql/migrations/*.sql in order (fresh database only)
+	$(PSQL) -v app_password="$(NOTES_DB_PASSWORD)" < sql/001_schema.sql
+	$(PSQL) < sql/002_seed.sql
+	@for file in sql/migrations/*.sql; do echo "migrate $$file"; $(PSQL) < $$file; done
+```
+
+`db` runs `001_schema.sql` with the app role's password from `NOTES_DB_PASSWORD`, then `002_seed.sql`, then a shell `for` loop over every file in `sql/migrations/` in name order, printing and running each.
+
+```make
+queries: ## run sql/003_queries.sql: visible notes, shares, sessions, audit summary
+	docker compose exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) -v ON_ERROR_STOP=1 < sql/003_queries.sql
+```
+
+`queries` runs `003_queries.sql`.
+
+```make
+reset-db: ## empty every table (sql/reset.sql)
+	$(PSQL) < sql/reset.sql
+```
+
+`reset-db` empties every table.
+
+```make
+# Foreground server: gunicorn on APP_HOST:APP_PORT, SIGTERM or Ctrl-C shuts it down gracefully.
+run: env $(STAMP) ## start the app on http://127.0.0.1:8047 (needs make up)
+	$(SERVE)
+```
+
+`run` starts the server in the foreground; SIGTERM or Ctrl-C shuts it down gracefully.
+
+```make
+demo: env $(STAMP) ## run the lesson's scenario against a server started for the run (needs make up)
+	scripts/demo.sh
+```
+
+`demo` runs `scripts/demo.sh`.
+
+```make
+health: $(STAMP) ## exit 0 when the running server answers /readyz
+	$(VENV)/bin/notes-app-health
+```
+
+`health` runs the health program.
+
+```make
+lint: $(STAMP) ## ruff check (with security rules), ruff format check, mypy, import-linter
+	$(VENV)/bin/ruff check .
+	$(VENV)/bin/ruff format --check .
+	$(VENV)/bin/mypy
+	$(VENV)/bin/lint-imports
+```
+
+`lint` runs four checks, stopping at the first failure: `ruff check .`, `ruff format --check .`, `mypy` and `lint-imports`.
+
+```make
+format: $(STAMP) ## apply ruff's formatting and safe fixes
+	$(VENV)/bin/ruff check --fix .
+	$(VENV)/bin/ruff format .
+```
+
+`format` applies ruff's safe fixes and formatting.
+
+```make
+# Unit tests need no database. The domain and application must stay at 95% coverage or more.
+test: $(STAMP) ## unit tests with coverage (no database needed)
+	$(PY) -m pytest tests/unit --cov=notes_app --cov-report=term
+	$(PY) -m coverage report --include='src/notes_app/domain/*,src/notes_app/application/*' --fail-under=95
+```
+
+`test` runs the unit tests with coverage, then `coverage report` for the domain and application folders with `--fail-under=95`: it fails if less than 95 percent of those lines ran.
+
+```make
+test-security: $(STAMP) ## one test per control of the threat model (needs make up)
+	$(PY) -m pytest tests/security -v
+```
+
+`test-security` runs the security tests verbosely.
+
+```make
+test-integration: $(STAMP) ## the PostgreSQL adapters (needs make up)
+	$(PY) -m pytest tests/integration -m integration
+```
+
+`test-integration` runs tests marked `integration`.
+
+```make
+test-e2e: $(STAMP) ## the lesson's scenario over real HTTP against a started server (needs make up)
+	$(PY) -m pytest tests/e2e -m e2e
+```
+
+`test-e2e` runs tests marked `e2e`.
+
+```make
+test-all: test test-integration test-security test-e2e ## every test level (needs make up)
+```
+
+`test-all` is a list of other targets.
+
+```make
+# The lesson's "does each test fail without its control?": run the security suite once per deliberate weakness.
+prove: $(STAMP) ## run the security suite with each control removed in turn and show the tests fail (needs make up)
+	$(PY) scripts/prove_controls.py
+```
+
+`prove` runs the proof script that removes each control in turn.
+
+```make
+audit: $(STAMP) ## check the locked dependencies for known vulnerabilities
+	$(VENV)/bin/pip-audit --no-deps --disable-pip -r requirements-dev.lock
+```
+
+`audit` runs `pip-audit` on the lock (`--no-deps` stops it resolving more packages, `--disable-pip` stops it building a temporary environment).
+
+```make
+sbom: $(STAMP) ## write sbom.cdx.json (CycloneDX) for the locked runtime dependencies
+	$(VENV)/bin/cyclonedx-py requirements requirements.lock --of JSON -o sbom.cdx.json
+	@echo "wrote sbom.cdx.json"
+```
+
+`sbom` writes a CycloneDX bill of materials of the runtime lock file as JSON and prints a line.
+
+```make
+check: lint test ## everything that needs no database
+```
+
+`check` runs `lint` and `test`.
+
+```make
+docker-build: ## build the container image
+	docker build -t security-threat-model-and-harden:dev .
+```
+
+`docker-build` builds the image and tags it.
+
+```make
+docker-run: env ## run the image against the compose database and wait until it is healthy (needs make up)
+	docker compose --profile app up -d --wait --build app
+```
+
+`docker-run` starts the `app` service, which sits in the compose profile `app`, building it first and waiting for health.
+
+```make
+down: ## stop the containers and delete their data
+	docker compose --profile app down -v
+```
+
+`down` stops the containers and deletes their data (`-v`).
+
+```make
+clean: down
+	rm -rf $(VENV) logs .pytest_cache .mypy_cache .ruff_cache .import_linter_cache .coverage sbom.cdx.json
+```
+
+`clean` removes the environment, logs, caches and the SBOM.
+
 ## Try it yourself
 
 1. List every target with its description:

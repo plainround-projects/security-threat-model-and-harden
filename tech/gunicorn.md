@@ -94,6 +94,107 @@ Runs in each worker as it exits. `close_all()` closes every database pool the pr
 
 `-c python:notes_app.interfaces.gunicorn_conf` loads the configuration from an importable Python module instead of a file path (`python:` prefix). `"notes_app.interfaces.wsgi:build_app()"` is the **application factory** form: gunicorn calls `build_app()` in each worker. `build_app()` reads `Settings.from_environment(os.environ)` first, so a missing `NOTES_DB_PASSWORD` stops the worker at start-up with a clear error rather than after serving traffic.
 
+### Line by line: `src/notes_app/interfaces/gunicorn_conf.py`
+
+```python
+"""gunicorn settings: ``gunicorn -c python:notes_app.interfaces.gunicorn_conf "notes_app.interfaces.wsgi:build_app()"``.
+
+SIGTERM makes the master stop accepting connections, lets each worker finish its in-flight requests (up to
+``graceful_timeout``), then each worker closes its database pool in ``worker_exit``.
+"""
+```
+
+The docstring: the start command, and the shutdown behavior. **SIGTERM** is the signal (a message from the operating system) that asks a process to stop politely; the gunicorn master stops accepting connections, workers finish their running requests for up to `graceful_timeout` seconds, and each worker closes its database pool in `worker_exit`.
+
+```python
+from __future__ import annotations
+
+import os
+from typing import Any
+```
+
+Type hints kept as text; `os`; `Any`. In a gunicorn configuration file each module-level variable is one setting.
+
+```python
+bind = f"{os.environ.get('APP_HOST', '127.0.0.1')}:{os.environ.get('APP_PORT', '8047')}"
+```
+
+`bind` is the address and port to listen on, from `APP_HOST` and `APP_PORT`, default `127.0.0.1:8047`.
+
+```python
+workers = int(os.environ.get("WEB_CONCURRENCY", "2"))
+```
+
+`workers` is the number of worker **processes** (separate running copies of the program), from `WEB_CONCURRENCY`, default 2.
+
+```python
+threads = 4
+worker_class = "gthread"
+```
+
+`threads = 4` with `worker_class = "gthread"`: each worker runs four **threads** (lightweight lines of execution inside one process).
+
+```python
+timeout = 30
+```
+
+`timeout = 30`: a worker silent for 30 seconds is killed and restarted.
+
+```python
+graceful_timeout = 20
+```
+
+`graceful_timeout = 20`: workers get 20 seconds to finish after a stop signal.
+
+```python
+keepalive = 5
+```
+
+`keepalive = 5`: wait five seconds for another request on an open connection.
+
+```python
+control_socket_disable = True  # no admin socket in the home directory: one fewer local attack surface
+```
+
+`control_socket_disable = True` turns off gunicorn's local control socket (a file in the home directory through which a running gunicorn can be commanded): one fewer local attack surface.
+
+```python
+limit_request_line = 4094
+limit_request_fields = 50
+```
+
+`limit_request_line = 4094` caps the first line of a request and `limit_request_fields = 50` caps the number of headers.
+
+```python
+accesslog = None  # the application writes one structured line per request
+errorlog = "-"
+```
+
+`accesslog = None` turns off gunicorn's access log because the application writes one structured line per request; `errorlog = "-"` sends gunicorn's error log to standard error.
+
+```python
+logconfig_dict: dict[str, Any] = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"json": {"()": "notes_app.infrastructure.logging.JsonFormatter"}},
+    "handlers": {"stderr": {"class": "logging.StreamHandler", "formatter": "json", "stream": "ext://sys.stderr"}},
+    "root": {"level": "INFO", "handlers": ["stderr"]},
+    "loggers": {"gunicorn.error": {"handlers": ["stderr"], "level": "INFO", "propagate": False}},
+}
+```
+
+`logconfig_dict` is a Python logging configuration: version 1; keep other loggers; a formatter `json` built by calling the class `JsonFormatter` (the `"()"` key means "call this"); a handler writing to standard error with it (`ext://sys.stderr` names the real stream); root at `INFO`; and the `gunicorn.error` logger using the same handler and not passing messages up (`propagate: False`, so each appears once).
+
+```python
+def worker_exit(server: object, worker: object) -> None:
+    """Called in the worker as it exits: close the database pool."""
+    from notes_app.interfaces.wsgi import close_all
+
+    close_all()
+```
+
+`worker_exit` is a **hook** gunicorn calls in a worker as it exits. It imports `close_all` inside the function and calls it to close the pool.
+
 ## Try it yourself
 
 1. Check the version and your settings load:

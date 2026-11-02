@@ -95,6 +95,108 @@ Every `run:` line is a `make` target a developer also runs. The workflow has alm
 
 `actionlint .github/workflows/ci.yml` (the workflow linter) reports no problems on this file.
 
+### Line by line: `.github/workflows/ci.yml`
+
+A GitHub Actions **workflow** is a YAML file under `.github/workflows/` that GitHub runs when an event happens. It has **jobs**; each job runs on a fresh virtual machine (**runner**) and runs **steps** in order: `run:` runs a shell command and `uses:` runs a packaged action.
+
+```yaml
+name: ci
+
+on: [push, pull_request]
+```
+
+The name, and `on: [push, pull_request]`: run on every push and every pull request.
+
+```yaml
+permissions:
+  contents: read
+```
+
+Top-level `permissions: contents: read` gives the automatic token read-only access by default.
+
+```yaml
+jobs:
+  check:
+    name: Format, lint (with security rules), types, import rules, unit tests with coverage, dependency audit, SBOM
+    runs-on: ubuntu-latest
+    steps:
+```
+
+The `jobs:` block starts with `check`, a long display name and a Linux runner (`ubuntu-latest`).
+
+```yaml
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+```
+
+`actions/checkout` is pinned to a full 40-character commit hash, not a version tag, because a tag can be moved by whoever controls that repository while a commit hash cannot. The trailing comment names the version. `persist-credentials: false` stops the checkout from leaving the token in git's configuration.
+
+```yaml
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+```
+
+`actions/setup-python` installs Python 3.12 (pinned by hash).
+
+```yaml
+      - run: make check
+      - run: make audit
+      - run: make sbom
+```
+
+Three steps run make targets: `make check` (lint and unit tests), `make audit` (dependency vulnerabilities) and `make sbom`. CI runs the same commands as a laptop.
+
+```yaml
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+```
+
+`actions/upload-artifact` keeps `sbom.cdx.json` as a downloadable file named `sbom-cyclonedx`.
+
+```yaml
+  database:
+    name: Integration, security and end-to-end tests, and the controls-removed proof (PostgreSQL 18)
+    runs-on: ubuntu-latest
+    steps:
+```
+
+The second job, `database`, runs the tests that need PostgreSQL.
+
+```yaml
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+```
+
+Checkout and Python as before.
+
+```yaml
+      - run: make up
+```
+
+`make up` starts PostgreSQL 18 and creates the schema.
+
+```yaml
+      - run: make test-integration test-security test-e2e
+      - run: make prove
+```
+
+`make test-integration test-security test-e2e` runs three test levels in one command, then `make prove` removes each control in turn and checks the guarding tests fail.
+
+```yaml
+      - if: always()
+        run: make down
+```
+
+`if: always()` makes the last step run even if an earlier step failed, so `make down` always cleans up.
+
 ## Try it yourself
 
 1. Lint the workflow:

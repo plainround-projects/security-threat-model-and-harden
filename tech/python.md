@@ -1656,6 +1656,658 @@ class UnsaltedSha256Hasher:
 
 `spend_equal_effort` does nothing; there is no cost to equalize.
 
+### Line by line: `src/notes_app/interfaces/composition.py`
+
+```python
+"""The composition root: the one place that knows which adapter implements which port."""
+```
+
+The docstring: the **composition root**, the one place that knows which adapter implements which port.
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+```
+
+Type hints kept as text and `dataclass`.
+
+```python
+from notes_app.application.accounts import AccountService
+from notes_app.application.notes import NoteService
+from notes_app.application.policy import OwnerOrSharedPolicy
+from notes_app.application.ports import AccessPolicy, AuditLog, PasswordHasher
+from notes_app.application.sessions import SessionService
+from notes_app.infrastructure.argon2_hasher import Argon2PasswordHasher
+from notes_app.infrastructure.clock import SecretsTokenGenerator, SystemClock
+from notes_app.infrastructure.postgres.audit import PostgresAuditLog
+from notes_app.infrastructure.postgres.database import Database
+from notes_app.infrastructure.postgres.notes import PostgresNoteRepository
+from notes_app.infrastructure.postgres.sessions import PostgresSessionRepository
+from notes_app.infrastructure.postgres.throttle import PostgresLoginThrottle
+from notes_app.infrastructure.postgres.users import PostgresUserRepository
+from notes_app.infrastructure.settings import Settings
+from notes_app.infrastructure.weaknesses.concatenated_notes import ConcatenatedNoteRepository
+from notes_app.infrastructure.weaknesses.open_policy import AllowEverythingPolicy
+from notes_app.infrastructure.weaknesses.unsalted_sha256_hasher import UnsaltedSha256Hasher
+```
+
+Imports of the services, the ports, every adapter and the three deliberate weaknesses. This is the one module allowed to import both sides.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Container:
+    """The wired application: settings, the database and the three services the HTTP layer calls."""
+
+    settings: Settings
+    database: Database
+    audit: AuditLog
+    accounts: AccountService
+    sessions: SessionService
+    notes: NoteService
+```
+
+`Container` is a frozen record of the wired application: settings, the database, the audit log and the three services the HTTP layer calls.
+
+```python
+def build_container(settings: Settings) -> Container:
+    """Wire adapters into use cases. A deliberate weakness (APP_ENV=test only) swaps one adapter here."""
+    weak = settings.weaknesses
+    database = Database(settings.database)
+    clock = SystemClock()
+    audit = PostgresAuditLog(database)
+    users = PostgresUserRepository(database)
+```
+
+`build_container` takes the settings, remembers the weakness switches, builds the database pool, the clock, the audit log and the user repository.
+
+```python
+    hasher: PasswordHasher = (
+        UnsaltedSha256Hasher()
+        if weak.weak_password_hash
+        else Argon2PasswordHasher(
+            time_cost=settings.argon2_time_cost,
+            memory_kib=settings.argon2_memory_kib,
+            parallelism=settings.argon2_parallelism,
+        )
+    )
+```
+
+The hasher is the unsalted SHA-256 only when the weakness is on; otherwise argon2 with the configured cost, memory and parallelism.
+
+```python
+    policy: AccessPolicy = AllowEverythingPolicy() if weak.skip_ownership_check else OwnerOrSharedPolicy()
+    notes_repository = (
+        ConcatenatedNoteRepository(database) if weak.sql_concatenation else PostgresNoteRepository(database)
+    )
+```
+
+The access policy is the open one only when the ownership-check weakness is on; the note repository is the string-concatenating one only when the SQL weakness is on.
+
+```python
+    throttle = PostgresLoginThrottle(
+        database, max_failures=settings.login_max_failures, window_seconds=settings.login_window_seconds
+    )
+```
+
+The throttle is built with the configured limit and window.
+
+```python
+    return Container(
+        settings=settings,
+        database=database,
+        audit=audit,
+        accounts=AccountService(users, hasher, throttle, audit, clock),
+        sessions=SessionService(PostgresSessionRepository(database), SecretsTokenGenerator(), clock, settings.session),
+        notes=NoteService(notes_repository, users, policy, audit),
+    )
+```
+
+The container is returned with the account service (users, hasher, throttle, audit, clock), the session service (session repository, token generator, clock, session policy) and the note service (notes, users, policy, audit).
+
+### Line by line: `src/notes_app/interfaces/health_cli.py`
+
+```python
+"""``notes-app-health``: exit 0 when the running server answers ``/readyz`` (the container's health check)."""
+```
+
+The docstring: the command `notes-app-health` exits 0 when the running server answers `/readyz`; the container's health check runs it.
+
+```python
+from __future__ import annotations
+
+import os
+import sys
+import urllib.error
+import urllib.request
+```
+
+Imports: `os`, `sys`, and the standard URL tools `urllib.error` and `urllib.request`.
+
+```python
+def main() -> int:
+    """Probe the readiness endpoint on the loopback address; print the outcome and return the exit code."""
+    port = os.environ.get("APP_PORT", "8047")
+    url = f"http://127.0.0.1:{port}/readyz"
+```
+
+`main` reads the port from `APP_PORT` (default 8047) and builds the address on `127.0.0.1`, the loopback address that always means "this same machine".
+
+```python
+    try:
+        with urllib.request.urlopen(url, timeout=3) as response:
+            ok = response.status == 200
+```
+
+It opens the address with a three-second limit and records whether the status was 200.
+
+```python
+    except (urllib.error.URLError, OSError) as error:
+        print(f"unhealthy: {error}", file=sys.stderr)
+        return 1
+```
+
+A network error prints `unhealthy: <reason>` to standard error and returns 1.
+
+```python
+    print("healthy" if ok else "unhealthy")
+    return 0 if ok else 1
+```
+
+Otherwise it prints `healthy` or `unhealthy` and returns 0 or 1. Docker treats exit code 0 as healthy.
+
+```python
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+When run as a program, the return value becomes the exit code.
+
+### Line by line: `src/notes_app/interfaces/demo_cli.py`
+
+```python
+"""``notes-app-demo``: the lesson's scenario against a running server, printed as checked steps.
+
+It signs up generated users (passwords are random and never printed), then shows each control from the threat
+model working: cookie flags, headers, output encoding, authorization, CSRF, throttling, sign-out.
+"""
+```
+
+The docstring: the command `notes-app-demo` runs the lesson's scenario against a running server and prints each check. It signs up generated users (random passwords, never printed) and shows each control from the threat model working: cookie flags, headers, output encoding, authorization, CSRF, throttling and sign-out.
+
+```python
+from __future__ import annotations
+```
+
+Type hints kept as text.
+
+```python
+import argparse
+import http.client
+import json
+import os
+import re
+import secrets
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from urllib.parse import urlencode
+```
+
+Imports: `argparse` (command-line options), `http.client` (a small HTTP client), `json`, `os`, `re` (regular expressions), `secrets` (random values), `sys`, `Callable`, `dataclass` and `urlencode` (turns a dictionary into form text).
+
+```python
+from notes_app.interfaces.http.security import CSRF_HEADER, SESSION_COOKIE
+```
+
+The names of the session cookie and the CSRF header are taken from the application so the demo cannot drift from it.
+
+```python
+HOSTILE = "<script>alert(1)</script> and a quote: ' OR '1'='1"
+_CSRF_FIELD = re.compile(r'name="csrf_token" value="([^"]+)"')
+REQUIRED_HEADERS = ("Content-Security-Policy", "X-Content-Type-Options", "X-Frame-Options")
+```
+
+`HOSTILE` is the attack text the demo stores in a note: a script tag and a SQL-injection-style quote. `_CSRF_FIELD` is a regular expression that finds `name="csrf_token" value="..."` in a page and captures the value. `REQUIRED_HEADERS` are three headers every response must have.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Step:
+    """One checked claim of the scenario."""
+
+    name: str
+    passed: bool
+    detail: str
+```
+
+`Step` is one checked claim: a name, whether it passed and a detail text.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Reply:
+    """The parts of an HTTP response the scenario looks at."""
+
+    status: int
+    headers: dict[str, str]
+    set_cookies: tuple[str, ...]
+    body: str
+
+    def json(self) -> dict[str, object]:
+        """The body as a JSON object."""
+        parsed = json.loads(self.body)
+        return parsed if isinstance(parsed, dict) else {}
+```
+
+`Reply` keeps the parts of an HTTP response the scenario looks at: status, headers, the list of `Set-Cookie` headers and the body text. Its `json` method parses the body as a JSON object, or returns an empty dictionary.
+
+```python
+class Browser:
+    """A tiny HTTP client with one cookie. It sets the Secure cookie by hand because plain-http clients rightly
+    refuse to send it; a real browser treats http://localhost as secure."""
+
+    def __init__(self, host: str, port: int) -> None:
+        self._host, self._port = host, port
+        self.cookie: str | None = None
+```
+
+`Browser` is a tiny HTTP client with one cookie. The docstring explains why it sets the `Secure` cookie by hand: a plain-HTTP client rightly refuses to send a Secure cookie, whereas real browsers treat `http://localhost` as secure.
+
+```python
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        form: dict[str, str] | None = None,
+        body: object = None,
+        headers: dict[str, str] | None = None,
+    ) -> Reply:
+        """Send one request and remember a cookie the server sets or clears."""
+```
+
+`request` sends one request. The `*` makes `form`, `body` and `headers` keyword-only.
+
+```python
+        sent = dict(headers or {})
+        payload: str | None = None
+        if form is not None:
+            payload = urlencode(form)
+            sent["Content-Type"] = "application/x-www-form-urlencoded"
+        elif body is not None:
+            payload = json.dumps(body)
+            sent["Content-Type"] = "application/json"
+            sent["Accept"] = "application/json"
+```
+
+It copies the headers; a `form` is URL-encoded with the form content type; a `body` is JSON-encoded and the request is marked as JSON in both directions.
+
+```python
+        if self.cookie:
+            sent["Cookie"] = f"{SESSION_COOKIE}={self.cookie}"
+```
+
+If it holds a cookie, the `Cookie` header is added.
+
+```python
+        connection = http.client.HTTPConnection(self._host, self._port, timeout=10)
+        try:
+            connection.request(method, path, body=payload, headers=sent)
+            response = connection.getresponse()
+            text = response.read().decode()
+            cookies = tuple(value for name, value in response.getheaders() if name.lower() == "set-cookie")
+            reply = Reply(response.status, dict(response.getheaders()), cookies, text)
+        finally:
+            connection.close()
+```
+
+It opens a connection with a 10-second limit, sends the request, reads the answer, collects all `Set-Cookie` headers and builds a `Reply`; `finally` always closes the connection.
+
+```python
+        for header in reply.set_cookies:
+            name, _, rest = header.partition("=")
+            if name == SESSION_COOKIE:
+                self.cookie = None if "Max-Age=0" in header else rest.split(";", 1)[0]
+        return reply
+```
+
+For each `Set-Cookie` of the session cookie, the client remembers the value (the part before the first `;`), or forgets it if the server expired it with `Max-Age=0`.
+
+```python
+    def csrf_token(self) -> str:
+        """The current session's CSRF token, read from the sign-in form."""
+        match = _CSRF_FIELD.search(self.request("GET", "/login").body)
+        if match is None:
+            raise RuntimeError("no CSRF token on the sign-in page")
+        return match.group(1)
+```
+
+`csrf_token` loads the sign-in page and reads the token from the hidden form field; a missing token raises an error.
+
+```python
+    def register(self, prefix: str) -> tuple[str, str, Reply]:
+        """Sign up and sign in a new generated user; returns the username, the password and the sign-in reply."""
+        username, password = f"{prefix}_{secrets.token_hex(4)}", secrets.token_urlsafe(18)
+        self.request(
+            "POST", "/signup", form={"username": username, "password": password, "csrf_token": self.csrf_token()}
+        )
+        signed_in = self.request(
+            "POST", "/login", form={"username": username, "password": password, "csrf_token": self.csrf_token()}
+        )
+        return username, password, signed_in
+```
+
+`register` makes a username with a prefix and four random bytes in hexadecimal and an 18-byte random password, signs up with the CSRF token, signs in and returns the name, the password and the sign-in reply.
+
+```python
+    def api(self, method: str, path: str, body: object = None, *, csrf: str | None = "auto") -> Reply:
+        """A JSON request with the session's CSRF token (``"auto"``), none (``None``) or a given one."""
+        token = self.csrf_token() if csrf == "auto" else csrf
+        return self.request(method, path, body=body, headers={CSRF_HEADER: token} if token else {})
+```
+
+`api` sends a JSON request. The `csrf` argument is `"auto"` (fetch the session's token), `None` (send none) or a given text; the token goes in the CSRF header.
+
+```python
+def _cookie_flags(set_cookies: tuple[str, ...]) -> tuple[bool, str]:
+    cookie = next((value for value in set_cookies if value.startswith(f"{SESSION_COOKIE}=")), "")
+    value = cookie.split("=", 1)[1].split(";", 1)[0] if cookie else ""
+    flags = all(flag in cookie for flag in ("HttpOnly", "Secure", "SameSite=Lax", "Path=/"))
+    opaque = len(value) >= 40 and value.count(".") < 2
+    return flags and opaque, f"{cookie.split(';', 1)[0][:24]}... ({len(value)} chars) " + "; ".join(
+        part.strip() for part in cookie.split(";")[1:]
+    )
+```
+
+`_cookie_flags` finds the session cookie in the replies and checks it has `HttpOnly`, `Secure`, `SameSite=Lax` and `Path=/`, and that its value is opaque (at least 40 characters and not a signed token with dots). It returns the verdict and a readable description with only the first 24 characters of the value shown.
+
+```python
+def run_scenario(host: str, port: int) -> list[Step]:
+    """Run every step against the server and return the results. Never raises on a failed expectation."""
+    alice, bob, steps = Browser(host, port), Browser(host, port), []
+```
+
+`run_scenario` runs every step and returns the results without ever raising on a failed expectation. It creates two browsers, Alice's and Bob's.
+
+```python
+    def check(name: str, passed: bool, detail: str) -> None:
+        steps.append(Step(name, passed, detail))
+```
+
+`check` appends a `Step`.
+
+```python
+    ready = alice.request("GET", "/readyz")
+    check("the server is ready", ready.status == 200, f"/readyz -> {ready.status}")
+```
+
+Step 1: `/readyz` answers 200.
+
+```python
+    _, _, signed_in = alice.register("alice")
+    bob_name, bob_password, _ = bob.register("bob")
+    ok, detail = _cookie_flags(signed_in.set_cookies)
+    check("the session cookie is opaque, HttpOnly, Secure, SameSite=Lax", ok, detail)
+```
+
+Step 2: both users sign up and sign in; the cookie flags are checked on Alice's sign-in reply.
+
+```python
+    page = alice.request("GET", "/notes")
+    missing = [name for name in REQUIRED_HEADERS if name not in page.headers]
+    check("security headers are on the response", not missing, f"missing: {missing or 'none'}")
+```
+
+Step 3: the notes page has the three required headers.
+
+```python
+    created = alice.api("POST", "/notes", {"title": "It's a title", "content": HOSTILE})
+    note_id = int(str(created.json().get("id", 0)))
+    note_page = alice.request("GET", f"/notes/{note_id}").body
+    check(
+        "hostile content is stored and rendered as inert text",
+        created.status == 201 and "&lt;script&gt;" in note_page and "<script>" not in note_page,
+        f"note {note_id}: page shows the markup escaped",
+    )
+```
+
+Step 4: Alice creates a note whose content is the hostile text; the page must show `&lt;script&gt;` (encoded) and must not contain a real `<script>` tag.
+
+```python
+    verdicts = [
+        bob.api(method, f"/notes/{note_id}", body, csrf="auto").status
+        for method, body in (("GET", None), ("PATCH", {"content": "changed"}), ("DELETE", None))
+    ]
+    check(
+        "another user gets 404 for read, update and delete",
+        verdicts == [404, 404, 404],
+        f"GET, PATCH, DELETE -> {verdicts}",
+    )
+```
+
+Step 5: Bob (with a valid CSRF token) tries to read, update and delete Alice's note; each answer must be 404.
+
+```python
+    no_token = alice.api("POST", "/notes", {"title": "x", "content": "y"}, csrf=None)
+    wrong_token = alice.api("DELETE", f"/notes/{note_id}", csrf="not-the-token")
+    check(
+        "a state-changing request without the CSRF token is refused",
+        (no_token.status, wrong_token.status) == (403, 403),
+        f"no token -> {no_token.status}, wrong token -> {wrong_token.status}",
+    )
+```
+
+Step 6: Alice sends a create without a token and a delete with a wrong token; both must be 403.
+
+```python
+    attempts = [
+        bob.request(
+            "POST",
+            "/login",
+            form={"username": bob_name, "password": bob_password[::-1], "csrf_token": bob.csrf_token()},
+        )
+        for _ in range(6)
+    ]
+    codes = [attempt.status for attempt in attempts]
+    check(
+        "repeated wrong passwords are throttled",
+        codes[:5] == [401] * 5 and codes[5] == 429,
+        f"statuses {codes}, Retry-After {attempts[-1].headers.get('Retry-After', 'missing')} s",
+    )
+```
+
+Step 7: Bob sends six sign-ins with his password reversed (wrong); the first five must be 401 and the sixth 429, and the `Retry-After` value is shown.
+
+```python
+    old_cookie = alice.cookie
+    alice.request("POST", "/logout", form={"csrf_token": alice.csrf_token()})
+    replay = Browser(host, port)
+    replay.cookie = old_cookie
+    after = replay.request("GET", "/notes", headers={"Accept": "application/json"})
+    check(
+        "the old session id stops working after sign out",
+        after.status == 401,
+        f"GET /notes with the old cookie -> {after.status}",
+    )
+```
+
+Step 8: Alice's cookie is saved, she logs out, and a fresh client with the old cookie asks for `/notes`; the answer must be 401, so the old session id is dead.
+
+```python
+    return steps
+```
+
+The list of steps is returned.
+
+```python
+def main(argv: list[str] | None = None, *, out: Callable[[str], None] = print) -> int:
+    """Run the scenario against ``--host``/``--port`` (default: APP_HOST and APP_PORT) and print one line per step."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default=os.environ.get("APP_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("APP_PORT", "8047")))
+    args = parser.parse_args(argv)
+```
+
+`main` takes the arguments and an output function. The options `--host` and `--port` default to the environment variables.
+
+```python
+    steps = run_scenario(args.host, args.port)
+    for number, step in enumerate(steps, start=1):
+        out(f"{number:>2}. {'PASS' if step.passed else 'FAIL'}  {step.name}\n        {step.detail}")
+    failed = [step for step in steps if not step.passed]
+    out(f"{len(steps) - len(failed)} of {len(steps)} checks passed")
+    return 1 if failed else 0
+```
+
+It runs the scenario, prints one numbered PASS or FAIL line with the detail per step, prints the count and returns 1 if any step failed.
+
+```python
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+When run as a program, the return value is the exit code.
+
+### Line by line: `scripts/prove_controls.py`
+
+```python
+"""Prove each control by removing it: run the tests that guard it with the matching deliberate weakness switched on
+and require every one of them to fail. A first run without any weakness requires them all to pass, so a failure
+later means "this test notices the missing control", not "this test is broken".
+
+    make prove          (needs make up)
+
+The weaknesses are the UNSAFE_* settings; the app accepts them only under APP_ENV=test, which this script sets.
+"""
+```
+
+The docstring: the script proves each control by removing it. It runs the tests that guard a control with the matching deliberate weakness switched on and requires every one of them to fail. A first run without any weakness requires them all to pass, so a later failure means "this test notices the missing control", not "this test is broken". `make prove` needs `make up`. The weaknesses are the `UNSAFE_*` settings, accepted only under `APP_ENV=test`, which the script sets.
+
+```python
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+```
+
+Type hints kept as text; `os`, `subprocess` (starts other programs) and `sys`.
+
+```python
+SECURITY = "tests/security"
+# weakness setting -> the tests that must fail while it is on (the control it removes, as the threat model names it)
+GUARDS: dict[str, tuple[str, ...]] = {
+    "UNSAFE_WEAK_PASSWORD_HASH": (f"{SECURITY}/test_passwords.py::test_passwords_are_salted_and_not_logged",),
+    "UNSAFE_SQL_CONCATENATION": (f"{SECURITY}/test_injection.py::test_hostile_content_is_stored_exactly_as_text",),
+    "UNSAFE_RAW_NOTE_OUTPUT": (f"{SECURITY}/test_injection.py::test_hostile_content_is_rendered_as_inert_text",),
+    "UNSAFE_SKIP_OWNERSHIP_CHECK": (
+        f"{SECURITY}/test_authorization.py::test_user_a_cannot_read_update_or_delete_user_b_note",
+        f"{SECURITY}/test_authorization.py::test_changing_the_id_in_the_url_reaches_no_note_of_another_user",
+        f"{SECURITY}/test_authorization.py::test_a_user_the_note_is_shared_with_can_read_but_not_change_or_share_it",
+    ),
+    "UNSAFE_WEAK_SESSION_COOKIE": (f"{SECURITY}/test_session.py::test_session_cookie_flags",),
+    "UNSAFE_SKIP_CSRF": (
+        f"{SECURITY}/test_session.py::test_state_changing_request_without_csrf_token_is_refused",
+        f"{SECURITY}/test_session.py::test_another_sessions_csrf_token_does_not_work",
+    ),
+    "UNSAFE_SKIP_SECURITY_HEADERS": (f"{SECURITY}/test_session.py::test_security_headers_on_every_response",),
+}
+```
+
+`SECURITY` is the folder of the security tests. `GUARDS` is a dictionary from each weakness setting to the tuple of tests that must fail while it is on. Each test is named in pytest's **node id** form `file::function`. For example `UNSAFE_SKIP_OWNERSHIP_CHECK` is guarded by three authorization tests, `UNSAFE_SKIP_CSRF` by two session tests and the other five weaknesses by one test each.
+
+```python
+def run_pytest(node_ids: tuple[str, ...], weakness: str | None) -> dict[str, str]:
+    """Run the given tests and return {test name: passed | failed}, read from pytest's ``-rA`` summary lines."""
+```
+
+`run_pytest` runs the given tests with or without a weakness and returns a dictionary from test name to `passed` or `failed`.
+
+```python
+    env = {key: value for key, value in os.environ.items() if not key.startswith("UNSAFE_")}
+    env["APP_ENV"] = "test"
+    if weakness:
+        env[weakness] = "1"
+```
+
+It copies the current environment without any `UNSAFE_*` variable (so a leftover switch cannot disturb the baseline), sets `APP_ENV=test` and, if a weakness is named, sets it to `1`.
+
+```python
+    run = subprocess.run(
+        [sys.executable, "-m", "pytest", *node_ids, "-q", "-p", "no:cacheprovider", "-rA", "--tb=no"],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+```
+
+It starts pytest with the same Python (`sys.executable -m pytest`) and the node ids; `-q` quiet, `-p no:cacheprovider` writes no cache folder, `-rA` prints a summary line for every outcome, `--tb=no` leaves out stack traces. Output is captured as text and a failing exit code does not raise (`check=False`).
+
+```python
+    outcomes = {}
+    for line in run.stdout.splitlines():
+        status, _, rest = line.partition(" ")
+        if status in {"PASSED", "FAILED", "ERROR"} and "::" in rest:
+            outcomes[rest.split("::")[-1].split(" ")[0]] = "passed" if status == "PASSED" else "failed"
+    return outcomes
+```
+
+It reads the summary lines: a line starting with `PASSED`, `FAILED` or `ERROR` and containing `::` gives the test function name (the part after the last `::`, before any space) and its outcome.
+
+```python
+def main() -> int:
+    """Print the table of weaknesses and verdicts; return 1 when a control is not proven."""
+```
+
+`main` prints the table and returns 1 when a control is not proven.
+
+```python
+    every_guard = tuple(dict.fromkeys(node for nodes in GUARDS.values() for node in nodes))
+    baseline = run_pytest(every_guard, None)
+    broken = [name for name, outcome in baseline.items() if outcome != "passed"]
+    print(f"baseline, no weakness: {len(baseline) - len(broken)} of {len(baseline)} guarding tests pass")
+```
+
+`dict.fromkeys(...)` removes duplicates while keeping order, giving every guarding test once. The baseline run (no weakness) is printed as a count.
+
+```python
+    if broken or len(baseline) != len(every_guard):
+        print(f"FAIL: these must pass with every control in place: {broken or 'some tests did not run'}")
+        return 1
+```
+
+If any baseline test did not pass, or fewer ran than expected, the script prints a failure and stops with 1.
+
+```python
+    unproven = 0
+    for weakness, nodes in GUARDS.items():
+        outcomes = run_pytest(nodes, weakness)
+        for node in nodes:
+            name = node.split("::", 1)[1]
+            verdict = (
+                "FAILS without the control (proven)" if outcomes.get(name) == "failed" else "STILL PASSES (not proven)"
+            )
+            unproven += outcomes.get(name) != "failed"
+            print(f"{weakness:<30} {name}\n{'':<30} -> {verdict}")
+```
+
+For each weakness it runs its tests with the weakness on. A test whose outcome is `failed` is "FAILS without the control (proven)"; anything else is "STILL PASSES (not proven)", counted in `unproven`.
+
+```python
+    total = sum(len(nodes) for nodes in GUARDS.values())
+    print(f"{total - unproven} of {total} guarding tests fail when their control is removed")
+    return 1 if unproven else 0
+```
+
+The total is printed (for example "9 of 9 guarding tests fail when their control is removed") and the exit code is 1 if any was unproven.
+
+```python
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+When run as a program, the return value is the exit code.
+
 ## Try it yourself
 
 Run these from the repository root after `make install`.

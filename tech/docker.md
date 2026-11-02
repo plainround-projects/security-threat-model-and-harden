@@ -130,6 +130,46 @@ Docker sends the project folder to the engine (the "build context") before build
 
 The Dockerfile then copies only what it names: the lock file, `pyproject.toml`, `README.md` and `src/`. Both mechanisms apply together: a file must pass the ignore list *and* be named by a `COPY`.
 
+### Line by line: `.dockerignore`
+
+A `.dockerignore` file lists paths left out of the **build context**, the files `docker build` sends to the builder. A smaller context builds faster and cannot leak local secrets into the image.
+
+```text
+.git
+.venv
+```
+
+The git history and the local virtual environment.
+
+```text
+.env
+.env.*
+!.env.example
+```
+
+`.env` and every `.env.*` file are excluded, but `!.env.example` puts the template back (a leading `!` re-includes a path).
+
+```text
+__pycache__
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.import_linter_cache
+.omc
+```
+
+Python caches, the installed-package metadata folder and the tool caches (pytest, mypy, ruff, import-linter) and the `.omc` work folder.
+
+```text
+tests
+docs
+logs
+.github
+```
+
+`tests`, `docs`, `logs` and `.github` are not part of the running image.
+
 ## Try it yourself
 
 (Needs Docker running with free disk space.)
