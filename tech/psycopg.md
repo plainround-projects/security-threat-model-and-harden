@@ -157,7 +157,7 @@ from psycopg_pool import ConnectionPool
 from notes_app.infrastructure.settings import DatabaseSettings
 ```
 
-The `DatabaseSettings` record (host, port, password and so on).
+The `DatabaseSettings` record (host, port, name, user, password and pool sizes).
 
 ```python
 class Database:

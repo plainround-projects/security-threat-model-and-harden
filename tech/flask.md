@@ -274,7 +274,7 @@ from werkzeug.exceptions import HTTPException
 from werkzeug.middleware.proxy_fix import ProxyFix
 ```
 
-From Flask: the application class; `Request` and `Response` types; `g` (an object that lives for one request and carries data between hooks and routes); `jsonify` (builds a JSON response); `make_response`, `redirect`, `render_template` (fills an HTML template) and `request` (the current request). `ResponseReturnValue` is the type of what a route may return. `HTTPException` is the base of Werkzeug's HTTP errors (404, 413 and so on). `ProxyFix` is a wrapper that reads the `X-Forwarded-For` headers of a trusted reverse proxy.
+From Flask: the application class; `Request` and `Response` types; `g` (an object that lives for one request and carries data between hooks and routes); `jsonify` (builds a JSON response); `make_response`, `redirect`, `render_template` (fills an HTML template) and `request` (the current request). `ResponseReturnValue` is the type of what a route may return. `HTTPException` is the base of Werkzeug's HTTP errors (404 and 413, for example). `ProxyFix` is a wrapper that reads the `X-Forwarded-For` headers of a trusted reverse proxy.
 
 ```python
 from notes_app.application.sessions import IssuedSession
