@@ -10,6 +10,24 @@ A small notes app (sign up, sign in, write notes, share one with another user), 
 | **Architecture** | [ARCHITECTURE.md](ARCHITECTURE.md); threat model and verification note: [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); decisions: [docs/adr](docs/adr) |
 | **Technology notes** | [tech/](tech/README.md): one beginner-level note per technology used here (Python, Bash, Make, Flask, PostgreSQL, Docker and the rest), written through this repository's own files |
 
+## Architecture
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/architecture-dark.svg">
+  <img alt="A browser talks over HTTPS to a Flask app inside one gunicorn process; the application services apply the domain rules and reach PostgreSQL 18 through ports, and a weaknesses folder lets make prove remove each control." src="docs/diagrams/architecture.svg">
+</picture>
+
+Every arrow is a trust boundary with a control and a test behind it, and the amber note shows how make prove removes a control to watch its test fail.
+
+## How one run flows
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/flow-dark.svg">
+  <img alt="A signed-in user's PATCH /notes/42 passes session lookup, the CSRF check, the access policy, validation and parameter binding before the response leaves with its headers." src="docs/diagrams/flow.svg">
+</picture>
+
+The amber rows show the two refusals on the way: a wrong CSRF token is a 403 and a note you cannot see is a 404, each with an audit row.
+
 ## Prerequisites
 
 | Tool | Version | Used for |
