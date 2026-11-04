@@ -56,7 +56,7 @@ flowchart LR
 4. The route reads the JSON body as plain values and calls `NoteService.update(user_id, 42, title, content, ip)`. The user id comes from the session, never from the request body.
 5. `NoteService` loads note 42 and its shares from the database and asks the `AccessPolicy`, which applies the domain rule: owner, reader, or nothing. With no access it writes a `note.access_denied` audit row and raises `NoteNotFoundError`; a reader gets `NoteForbiddenError`.
 6. With write access, the new title and content go through the domain validators (length, no NUL, one-line title), then to `PostgresNoteRepository.update`, which binds them as parameters.
-7. `finish` adds the security headers (CSP, nosniff, frame options, referrer policy, HSTS), `Cache-Control: no-store`, and logs one JSON line with the request id, method, path, status, duration and user id. The log carries no body, query string, cookie or header values.
+7. A separate `after_request` hook, `apply_security_headers`, adds the security headers (CSP, nosniff, frame options, referrer policy, HSTS) to every response. `finish` sets the session cookie, adds `Cache-Control: no-store`, and logs one JSON line with the request id, method, path, status, duration and user id. The log carries no body, query string, cookie or header values.
 
 ## Decisions and their trade-offs
 
